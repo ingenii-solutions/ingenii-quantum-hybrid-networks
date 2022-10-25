@@ -1,4 +1,4 @@
-# Ingenii Hybrid Networks
+# Ingenii Quantum Hybrid Networks
 
 Version: 0.1.0
 
