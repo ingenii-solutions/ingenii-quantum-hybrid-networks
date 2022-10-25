@@ -1,0 +1,13 @@
+qiskit==0.37.1
+qiskit-aer==0.10.4
+qiskit-ibmq-provider==0.19.2
+qiskit-nature==0.3.1
+qiskit-nature[pyscf]==0.3.1
+scikit-learn==1.1.2
+h5py==3.7.0
+matplotlib
+pylatexenc==2.10
+torch 
+torchaudio 
+torchvision 
+torch-geometric
