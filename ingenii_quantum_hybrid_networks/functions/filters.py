@@ -568,7 +568,51 @@ class QuantumFiltersBase():
 
         quantum_filter = output_probability*mask        
         return quantum_filter
-          
+
+    def _run(self, data, tol=1e-6, n_filt=0):
+        """
+        Runs the quantum filters for all the features
+            data (tensor): input data (one feature), shape (num_samples, num_features, N,N,N)
+            tol (float): tolerance for the masking matrix. All values from the original data which are smaller than the tolerance are set to 0.
+            n_filt (int): index of the number of filters
+        returns:
+            (tensor): output quantum filter
+        """
+        # Scale data
+        data_scaled = self._scale_data(data)
+        self.num_samples = data.shape[0] # Store number of samples
+        fin_shape = int(data.shape[-1]/self.stride) # Final shape of the data
+
+        data_out = np.zeros((data.shape[0], data.shape[1],) + (fin_shape,) * self.n_dimensions)
+
+        if self.backend=='torch':
+            for i in range(data.shape[1]): # Run for every feature
+                unitary_matrix = torch.tensor(self.unitaries_list[n_filt][i]).to(self.device)
+
+                if self.n_dimensions == 2:
+                    data_out[:,i,:,:] = self._run_filter(
+                        data_scaled[:,i,:,:], tol, unitary_matrix
+                    )
+                elif self.n_dimensions == 3:
+                    data_out[:,i,:,:,:] = self._run_filter(
+                        data_scaled[:,i,:,:,:], tol, unitary_matrix
+                    )
+        else:
+            for i in range(data.shape[0]):    
+                for j in range(data.shape[1]):
+                    gates_set = self.gates_set_list[n_filt][j]
+                    qubits_set = self.qubits_set_list[n_filt][j]
+
+                    if self.n_dimensions == 2:
+                        data_out[i,j,:,:] = self._run_filterQiskit(
+                            data[i,j,:,:], gates_set, qubits_set, tol
+                        )
+                    elif self.n_dimensions == 3:
+                        data_out[i,j,:,:,:] = self._run_filterQiskit(
+                            data[i,j,:,:,:], gates_set, qubits_set, tol
+                        )
+            
+        return data_out
 
 class QuantumFilters2D(QuantumFiltersBase):
     
@@ -606,36 +650,6 @@ class QuantumFilters2D(QuantumFiltersBase):
 
         super().__init__(n_dimensions=2, shape=shape, stride=stride, shots=shots, backend=backend)
 
-    def _run(self, data, tol=1e-6, n_filt=0):
-        """
-        Runs the quantum filters for all the features
-            data (tensor): input data (one feature), shape (num_samples, num_features, N,N,N)
-            tol (float): tolerance for the masking matrix. All values from the original data which are smaller than the tolerance are set to 0.
-            n_filt (int): index of the number of filters
-        returns:
-            (tensor): output quantum filter
-        """
-        # Scale data
-        data_scaled = self._scale_data(data)
-        self.num_samples = data.shape[0] # Store number of samples
-        fin_shape = int(data.shape[-1]/self.stride) # Final shape of the data
-        if self.backend=='torch':
-            data_out = torch.zeros((data.shape[0], data.shape[1], fin_shape,fin_shape))
-            for i in range(data.shape[1]): # Run for every feature
-                data_out[:,i,:,:] = self._run_filter(
-                    data_scaled[:,i,:,:], tol,
-                    torch.tensor(self.unitaries_list[n_filt][i]).to(self.device)
-                )
-        else:
-            data_out = np.zeros((data.shape[0], data.shape[1], fin_shape,fin_shape))
-            for i in range(data.shape[0]):    
-                for j in range(data.shape[1]):
-                    data_out[i,j,:,:] = self._run_filterQiskit(
-                        data[i,j,:,:], self.gates_set_list[n_filt][j], self.qubits_set_list[n_filt][j], tol
-                    )
-            
-        return data_out
-    
     def get_quantum_filters(self, data,tol=1e-6):   
         """
         Runs the quantum filters for all features multiple times (num_filters times)
@@ -714,32 +728,6 @@ class QuantumFilters3D(QuantumFiltersBase):
 
         super().__init__(n_dimensions=3, shape=shape, stride=stride, shots=shots, backend=backend)
 
-    def _run(self, data, tol=1e-6, n_filt=0):
-        """
-        Runs the quantum filters for all the features
-            data (tensor): input data (one feature), shape (num_samples, num_features, N,N,N)
-            tol (float): tolerance for the masking matrix. All values from the original data which are smaller than the tolerance are set to 0.
-            n_filt (int): index of the number of filters
-        returns:
-            (tensor): output quantum filter
-        """
-        # Scale data
-        data_scaled = self._scale_data(data)
-        self.num_samples = data.shape[0] # Store number of samples
-        fin_shape = int(data.shape[-1]/self.stride) # Final shape of the data
-        if self.backend=='torch':
-            data_out = torch.zeros((data.shape[0], data.shape[1],fin_shape,fin_shape,fin_shape))
-            for i in range(data.shape[1]): # Run for every feature
-                data_out[:,i,:,:,:] = self._run_filter(data_scaled[:,i,:,:,:],
-                                  tol, torch.tensor(self.unitaries_list[n_filt][i]).to(self.device))
-        else:
-            data_out = np.zeros((data.shape[0], data.shape[1],fin_shape,fin_shape,fin_shape))
-            for i in range(data.shape[0]):    
-                for j in range(data.shape[1]):
-                    data_out[i,j,:,:,:] = self._run_filterQiskit(data[i,j,:,:,:], self.gates_set_list[n_filt][j], self.qubits_set_list[n_filt][j], tol)
-            
-        return data_out
-    
     def get_quantum_filters(self, data,tol=1e-6):   
         """
         Runs the quantum filters for all features multiple times (num_filters times)
