@@ -336,6 +336,63 @@ class QuantumFiltersBase():
         qc.initialize(initial_state, list(range(self.nqbits)))
         return qc, initial_state    
     
+    def _roll_shape_and_strides(self, a, b, dx=1, dy=1, dz=None):   
+        '''
+        Rolling 3D window for numpy array. This function is only used with Qiskit backends.
+            a (np.array): input array
+            b (np.array): rolling 2D window array
+            dx (int): horizontal step, abscissa, number of columns
+            dy (int): vertical step, ordinate, number of rows
+            dz (int): transverse step, applicate, number of layers. Only used with 3D window
+        '''
+        if dz is not None:
+            shape = a.shape[:-3] + ((a.shape[-3] - b.shape[-3]) // dz + 1,)
+            strides = a.strides[:-3] + (a.strides[-3] * dz,)
+        else:
+            shape = a.shape[:-2]
+            strides = a.strides[:-2]
+
+        shape += \
+                ((a.shape[-2] - b.shape[-2]) // dy + 1,) + \
+                ((a.shape[-1] - b.shape[-1]) // dx + 1,) + \
+                b.shape  # multidimensional "sausage" with 3D cross-section
+        strides += \
+                  (a.strides[-2] * dy,) + \
+                  (a.strides[-1] * dx,)
+
+        if dz is not None:
+            strides += a.strides[-3:]
+        else:
+            strides += a.strides[-2:]
+
+        self.shape_windows = shape
+
+        return shape, strides
+
+    def _rollNumpy(self, a, b, dx=1, dy=1, dz=None):   
+        '''
+        Rolling 3D window for numpy array. This function is only used with Qiskit backends.
+            a (np.array): input array
+            b (np.array): rolling 2D window array
+            dx (int): horizontal step, abscissa, number of columns
+            dy (int): vertical step, ordinate, number of rows
+            dz (int): transverse step, applicate, number of layers. Only used with 3D window
+        '''
+        shape, strides = self._roll_shape_and_strides(a, b, dx, dy, dz)
+        return np.lib.stride_tricks.as_strided(a, shape=shape, strides=strides)
+    
+    def _roll(self, a, b, dx=1, dy=1, dz=None):  
+        '''
+        Rolling 3D window for pytorch tensor. This function is only used with Pytorch backends.
+            a (tensor): input array, shape (n_samples, N,N,N)
+            b (tensor): rolling 3D window array, shape (n,n,n)
+            dx (int): horizontal step, abscissa, number of columns
+            dy (int): vertical step, ordinate, number of rows
+            dz (int): transverse step, applicate, number of layers
+        '''
+        shape, strides = self._roll_shape_and_strides(a, b, dx, dy, dz)
+        return torch.as_strided(a, shape, strides)
+    
 
 class QuantumFilters2D(QuantumFiltersBase):
     
@@ -373,45 +430,6 @@ class QuantumFilters2D(QuantumFiltersBase):
 
         super().__init__(n_dimensions=2, shape=shape, stride=stride, shots=shots, backend=backend)
 
-    def _rollNumpy(self, a, b, dx=1, dy=1):   
-        '''
-        Rolling 3D window for numpy array. This function is only used with Qiskit backends.
-            a (np.array): input array
-            b (np.array): rolling 2D window array
-            dx (int): horizontal step, abscissa, number of columns
-            dy (int): vertical step, ordinate, number of rows
-        '''
-        shape = a.shape[:-2] + \
-                ((a.shape[-2] - b.shape[-2]) // dy + 1,) + \
-                ((a.shape[-1] - b.shape[-1]) // dx + 1,) + \
-                b.shape  # multidimensional "sausage" with 3D cross-section
-        strides = a.strides[:-2] + \
-                  (a.strides[-2] * dy,) + \
-                  (a.strides[-1] * dx,) + \
-                  a.strides[-2:]
-        self.shape_windows = shape
-        return np.lib.stride_tricks.as_strided(a, shape=shape, strides=strides)
-    
-    def _roll(self, a, b, dx=1, dy=1):  
-        '''
-        Rolling 3D window for pytorch tensor. This function is only used with Pytorch backends.
-            a (tensor): input array, shape (n_samples, N,N,N)
-            b (tensor): rolling 3D window array, shape (n,n,n)
-            dx (int): horizontal step, abscissa, number of columns
-            dy (int): vertical step, ordinate, number of rows
-        '''
-        shape = a.shape[:-2] + \
-                ((a.shape[-2] - b.shape[-2]) // dy + 1,) + \
-                ((a.shape[-1] - b.shape[-1]) // dx + 1,) + \
-                b.shape  # multidimensional "sausage" with 3D cross-section
-        strides = a.stride()[:-2] + \
-                (a.stride()[-2] * dy,) + \
-                (a.stride()[-1] * dx,) + \
-                  a.stride()[-2:]
-
-        self.shape_windows = shape
-        return torch.as_strided(a, shape, strides)
-    
     def _scale_data(self, data):
         """
         Scale the data to [0, pi/2) (each feature is scaled separately)
@@ -573,15 +591,19 @@ class QuantumFilters2D(QuantumFiltersBase):
         self.num_samples = data.shape[0] # Store number of samples
         fin_shape = int(data.shape[-1]/self.stride) # Final shape of the data
         if self.backend=='torch':
-            data_out = torch.zeros((data.shape[0], data.shape[1],fin_shape,fin_shape))
+            data_out = torch.zeros((data.shape[0], data.shape[1], fin_shape,fin_shape))
             for i in range(data.shape[1]): # Run for every feature
-                data_out[:,i,:,:] = self._run_filter(data_scaled[:,i,:,:],
-                                  tol, torch.tensor(self.unitaries_list[n_filt][i]).to(self.device))
+                data_out[:,i,:,:] = self._run_filter(
+                    data_scaled[:,i,:,:], tol,
+                    torch.tensor(self.unitaries_list[n_filt][i]).to(self.device)
+                )
         else:
-            data_out = np.zeros((data.shape[0], data.shape[1],fin_shape,fin_shape))
+            data_out = np.zeros((data.shape[0], data.shape[1], fin_shape,fin_shape))
             for i in range(data.shape[0]):    
                 for j in range(data.shape[1]):
-                    data_out[i,j,:,:] = self._run_filterQiskit(data[i,j,:,:], self.gates_set_list[n_filt][j], self.qubits_set_list[n_filt][j], tol)
+                    data_out[i,j,:,:] = self._run_filterQiskit(
+                        data[i,j,:,:], self.gates_set_list[n_filt][j], self.qubits_set_list[n_filt][j], tol
+                    )
             
         return data_out
     
@@ -663,51 +685,6 @@ class QuantumFilters3D(QuantumFiltersBase):
 
         super().__init__(n_dimensions=3, shape=shape, stride=stride, shots=shots, backend=backend)
 
-    def _rollNumpy(self, a, b, dx=1, dy=1, dz=1):   
-        '''
-        Rolling 3D window for numpy array. This function is only used with Qiskit backends.
-            a (np.array): input array
-            b (np.array): rolling 2D window array
-            dx (int): horizontal step, abscissa, number of columns
-            dy (int): vertical step, ordinate, number of rows
-            dz (int): transverse step, applicate, number of layers
-        '''
-        shape = a.shape[:-3] + \
-                ((a.shape[-3] - b.shape[-3]) // dz + 1,) + \
-                ((a.shape[-2] - b.shape[-2]) // dy + 1,) + \
-                ((a.shape[-1] - b.shape[-1]) // dx + 1,) + \
-                b.shape  # multidimensional "sausage" with 3D cross-section
-        strides = a.strides[:-3] + \
-                  (a.strides[-3] * dz,) + \
-                  (a.strides[-2] * dy,) + \
-                  (a.strides[-1] * dx,) + \
-                  a.strides[-3:]
-        self.shape_windows = shape
-        return np.lib.stride_tricks.as_strided(a, shape=shape, strides=strides)
-    
-    def _roll(self, a, b, dx=1, dy=1, dz=1):
-        '''
-        Rolling 3D window for pytorch tensor. This function is only used with Pytorch backends.
-            a (tensor): input array, shape (n_samples, N,N,N)
-            b (tensor): rolling 3D window array, shape (n,n,n)
-            dx (int): horizontal step, abscissa, number of columns
-            dy (int): vertical step, ordinate, number of rows
-            dz (int): transverse step, applicate, number of layers
-        '''
-        shape = a.shape[:-3] + \
-                ((a.shape[-3] - b.shape[-3]) // dz + 1,) + \
-                ((a.shape[-2] - b.shape[-2]) // dy + 1,) + \
-                ((a.shape[-1] - b.shape[-1]) // dx + 1,) + \
-                b.shape  # multidimensional "sausage" with 3D cross-section
-        strides = a.stride()[:-3] + \
-              (a.stride()[-3] * dz,) + \
-              (a.stride()[-2] * dy,) + \
-              (a.stride()[-1] * dx,) + \
-              a.stride()[-3:]
-
-        self.shape_windows = shape
-        return torch.as_strided(a, shape, strides)
-    
     def _scale_data(self, data):
         """
             Scale the data to [0, pi/2) (each feature is scaled separately)
