@@ -291,6 +291,51 @@ class QuantumFiltersBase():
         if nqbits != self.nqbits:
             raise ValueError('Incorrect number of qubits of the loaded quantum circuits')
                 
+    def _FRQI_encoding(self, box):
+        '''
+        Flexible representation of Quantum Images encoding. Takes an (nxn) or (nxnxn) box
+        and returns the encoded quantum circuit. 
+        This function is only used with Qiskit backends.
+            box (np.array): (nxn) or (nxnxn) box to be encoded
+        '''
+        # check if the box has the correct shape
+        assert box.shape==self.shape
+
+        # Calculate binary string of basis qubits
+        qbit_list = list(itertools.product([0, 1], repeat=self.nqbits-1))
+        coefs = {}
+
+        def _add_coeffs(theta, idx):
+            q_str = ''.join([str(q) for q in qbit_list[idx]])
+            coefs[q_str + '0'] = np.cos(theta)/np.sqrt(self.shape[0]**self.n_dimensions)
+            coefs[q_str + '1'] = np.sin(theta)/np.sqrt(self.shape[0]**self.n_dimensions)
+
+        l = 0
+        for i in range(box.shape[0]):
+            for j in range(box.shape[1]):
+                if self.n_dimensions == 2:
+                    _add_coeffs(box[i,j], l)
+                    l += 1
+                elif self.n_dimensions == 3:
+                    for k in range(box.shape[2]):
+                        _add_coeffs(box[i,j,k], l)
+                        l += 1
+
+        # store them in a dictionary and sort it by keys
+        coefs = list(collections.OrderedDict(sorted(coefs.items())).values())
+
+        # Define quantum circuit
+        cr = ClassicalRegister(self.nqbits-1)
+        qr = QuantumRegister(self.nqbits)
+        qc = QuantumCircuit(qr,cr)
+
+        # Calculate initial state
+        initial_state = np.zeros(2**self.nqbits)
+        coefs =  coefs/np.sqrt(np.sum(np.square(coefs)))
+        initial_state[:coefs.shape[0]] = coefs
+        qc.initialize(initial_state, list(range(self.nqbits)))
+        return qc, initial_state    
+    
 
 class QuantumFilters2D(QuantumFiltersBase):
     
@@ -328,42 +373,6 @@ class QuantumFilters2D(QuantumFiltersBase):
 
         super().__init__(n_dimensions=2, shape=shape, stride=stride, shots=shots, backend=backend)
 
-    def _FRQI_encoding(self, box):
-        '''
-        Flexible representation of Quantum Images encoding. Takes an (nxnxn) box and returns the encoded quantum circuit. 
-        This function is only used with Qiskit backends.
-            box (np.array): (nxn) box to be encoded
-        '''
-        # check if the box has the correct shape
-        assert box.shape==self.shape
-
-        # Calculate binary string of basis qubits
-        qbit_list = list(itertools.product([0, 1], repeat=self.nqbits-1))
-        coefs = {}
-        l = 0
-        for i in range(box.shape[0]):
-            for j in range(box.shape[1]):
-                theta = box[i,j]
-                q_str = ''.join([str(q) for q in qbit_list[l]])
-                coefs[q_str + '0'] = np.cos(theta)/np.sqrt(self.shape[0]**2)
-                coefs[q_str + '1'] = np.sin(theta)/np.sqrt(self.shape[0]**2)
-                l += 1
-        # store them in a dictionary and sort it by keys
-        coefs = list(collections.OrderedDict(sorted(coefs.items())).values())
-
-        # Define quantum circuit
-        cr = ClassicalRegister(self.nqbits-1)
-        qr = QuantumRegister(self.nqbits)
-        qc = QuantumCircuit(qr,cr)
-
-        # Calculate initial state
-        initial_state = np.zeros(2**self.nqbits)
-        coefs =  coefs/np.sqrt(np.sum(np.square(coefs)))
-        initial_state[:coefs.shape[0]] = coefs
-        qc.initialize(initial_state, list(range(self.nqbits)))
-        return qc, initial_state    
-    
-    
     def _rollNumpy(self, a, b, dx=1, dy=1):   
         '''
         Rolling 3D window for numpy array. This function is only used with Qiskit backends.
@@ -654,42 +663,6 @@ class QuantumFilters3D(QuantumFiltersBase):
 
         super().__init__(n_dimensions=3, shape=shape, stride=stride, shots=shots, backend=backend)
 
-    def _FRQI_encoding(self, box):
-        '''
-        Flexible representation of Quantum Images encoding. Takes an (nxnxn) box and returns the encoded quantum circuit. 
-        This function is only used with Qiskit backends.
-            box (np.array): (nxnxn) box to be encoded
-        '''
-        # check if the box has the correct shape
-        assert box.shape==self.shape
-
-        # Calculate binary string of basis qubits
-        qbit_list = list(itertools.product([0, 1], repeat=self.nqbits-1))
-        coefs = {}
-        l = 0
-        for i in range(box.shape[0]):
-            for j in range(box.shape[1]):
-                for k in range(box.shape[2]):
-                    theta = box[i,j,k]
-                    q_str = ''.join([str(q) for q in qbit_list[l]])
-                    coefs[q_str + '0'] = np.cos(theta)/np.sqrt(self.shape[0]**3)
-                    coefs[q_str + '1'] = np.sin(theta)/np.sqrt(self.shape[0]**3)
-                    l += 1
-        # store them in a dictionary and sort it by keys
-        coefs = list(collections.OrderedDict(sorted(coefs.items())).values())
-
-        # Define quantum circuit
-        cr = ClassicalRegister(self.nqbits-1)
-        qr = QuantumRegister(self.nqbits)
-        qc = QuantumCircuit(qr,cr)
-
-        # Calculate initial state
-        initial_state = np.zeros(2**self.nqbits)
-        coefs =  coefs/np.sqrt(np.sum(np.square(coefs)))
-        initial_state[:coefs.shape[0]] = coefs
-        qc.initialize(initial_state, list(range(self.nqbits)))
-        return qc, initial_state    
-    
     def _rollNumpy(self, a, b, dx=1, dy=1, dz=1):   
         '''
         Rolling 3D window for numpy array. This function is only used with Qiskit backends.
