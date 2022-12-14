@@ -5,7 +5,7 @@ from qiskit import QuantumCircuit, QuantumRegister, ClassicalRegister
 from qiskit.circuit import Parameter
 from qiskit import BasicAer, Aer, assemble, transpile
 from qiskit.quantum_info import Pauli
-from qiskit.opflow import *
+from qiskit import opflow
 
 import numpy as np
 import pickle
@@ -135,18 +135,18 @@ class QuantumFiltersBase():
         for q1_idx, q2_idx in itertools.combinations(qubit_idxs, 2): # Interaction operators
             name = name_gate[:q1_idx] + 'Z' + name_gate[q1_idx+1:q2_idx] + 'Z' + name_gate[q2_idx+1:]
             coef = np.random.uniform(-Js/2,Js/2)
-            pauli_op += coef*PauliOp(Pauli(name))
+            pauli_op += coef*opflow.PauliOp(Pauli(name))
 
         for q_idx in qubit_idxs: # Single qubit operators
             name = name_gate[:q_idx] + 'X' + name_gate[(q_idx+1):]
             coef = h
-            pauli_op += coef*PauliOp(Pauli(name))
+            pauli_op += coef*opflow.PauliOp(Pauli(name))
         
         # Time evolution operator exp(iHt)
         evo_time = Parameter('θ')
         evolution_op = (evo_time*pauli_op).exp_i()
         # Trotterization 
-        trotterized_op = PauliTrotterEvolution(trotter_mode=Suzuki(order=2, reps=1)).convert(evolution_op)
+        trotterized_op = opflow.PauliTrotterEvolution(trotter_mode=opflow.Suzuki(order=2, reps=1)).convert(evolution_op)
         bound = trotterized_op.bind_parameters({evo_time: t})
         # Convert the trotterized operator to a quantum circuit
         qc_ham = bound.to_circuit()
