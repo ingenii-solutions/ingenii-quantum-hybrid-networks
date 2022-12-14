@@ -15,8 +15,26 @@ import torch
 
 
 class QuantumFiltersBase():
-    def __init__(self, n_dimensions: int, shape: tuple=(4,4)):
+    def __init__(self, n_dimensions: int, shape: tuple, stride: float, shots: int, backend: str):
+
+        self.n_dimensions = n_dimensions
+
         self.nqbits = int(np.ceil(np.log2(shape[0]**n_dimensions)) + 1) # Calculate the number of qubits
+        
+        self.shape = shape
+        self.stride = stride
+        self.num_filters = 1
+        self.shots = shots
+
+        self.backend = backend
+        if self.backend == 'torch':
+            # set CUDA for PyTorch
+            use_cuda = torch.cuda.is_available()
+            if use_cuda:
+                self.device = torch.device("cuda:0")
+                torch.cuda.set_device(int("cuda:0".split(':')[1]))
+            else:
+                self.device = torch.device("cpu")
 
     gate_names = {
         "G1": ["CNOT", "H", "X"],
@@ -129,7 +147,90 @@ class QuantumFiltersBase():
         # Convert the trotterized operator to a quantum circuit
         qc_ham = bound.to_circuit()
         return qc_ham
-                      
+
+    def generate_unitaries(self, gates_name='G3', num_gates=300, num_filters=3, num_features=19, unitaries_file_name='unitaries.pickle', save=True):
+        """
+        Generates the quantum unitaries that represent the quantum reservoirs (random quantum circuits).  This function is only used with Pytorch backend.
+            gates_name (str): name of the family of quantum gates. Either G1, G2, G3 or Ising
+            num_gates (int): depth of the quantum circuits
+            num_filters (int): Number of quantum filters to apply to each feature
+            num_features (int): Number of features of the data
+            unitaries_file_name (str): name of the file containing unitary list (only needed if save=True)
+            save (bool): if True, the generated unitaries are saved to a pickle file.
+        """
+        if self.backend != 'torch':
+            raise ValueError("This function is only callable with the 'torch' backend")
+        self.U_list_filters = []
+        self.num_filters = num_filters
+        self.gates_name = gates_name
+        for i in range(num_filters):
+            U_list = []
+            for j in range(num_features):
+                # Store circuit parameters
+                self.num_gates = num_gates
+                # If the quantum reservoir is the Ising model
+                if gates_name == 'Ising':
+                    qc = self._apply_ising_gates()
+                else: # Otherwise, if it is one of the G families
+                    gates_set, qubits_set = self._select_gates_qubits(gates_name, num_gates)
+                    # Get unitary
+                    qc = QuantumCircuit(self.nqbits)
+                    # Random quantum circuit
+                    self._apply_G_gates(qc, gates_set, qubits_set)
+                # Get unitary
+                backend = BasicAer.get_backend('unitary_simulator')
+                job = backend.run(transpile(qc, backend))
+                U = job.result().get_unitary(qc)
+                U_list.append(U)
+            self.U_list_filters.append(U_list)
+        # Save unitaries to file
+        if save:
+            with open(unitaries_file_name, 'wb') as f:
+                pickle.dump(self.U_list_filters, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+    def generate_qc(self, gates_name='G3', num_gates=300, num_filters=3, num_features=19, save=True,
+                    saved_gates_filename=None, saved_qubits_filename=None):
+        '''
+        Generate sets of random quantum gates and their associated qubits and saves them. This function is only used with Qiskit backends.
+            gates_name (str): name of the family of quantum gates. Either G1, G2, G3 or Ising
+            num_gates (int): depth of the quantum circuits
+            num_filters (int): Number of quantum filters to apply to each feature
+            num_features (int): Number of features of the data
+            save (bool): Save the gates and qubits to pickle files
+            saved_gates_filename (str): File name for saved gates set
+            saved_qubits_filename (str): File name for saved qubit set
+        '''
+        if self.backend == 'torch':
+            raise ValueError("This function is only callable with the Qiskit backends")
+
+        saved_gates_filename = saved_gates_filename or f'gates_list_{self.n_dimensions}D.pickle'
+        saved_qubits_filename = saved_qubits_filename or f'qubits_list_{self.n_dimensions}D.pickle'
+
+        self.gates_set_list = []
+        self.qubits_set_list = [] 
+        # Store circuit parameters
+        self.gates_name = gates_name
+        self.num_gates = num_gates
+        self.num_filters = num_filters
+        self.num_features = num_features
+
+        for i in range(num_filters): # Random quantum circuit for each filter
+            gates_list = []
+            qubits_list = []
+            for j in range(num_features): # Random quantum circuit for each feature
+                gates_set, qubits_set = self._select_gates_qubits(gates_name, num_gates)
+                gates_list.append(gates_set)
+                qubits_list.append(qubits_set)
+            
+            self.gates_set_list.append(gates_list)
+            self.qubits_set_list.append(qubits_list)
+
+        # Save gates and qubits to file
+        if save:
+            with open(saved_gates_filename, 'wb') as f:
+                pickle.dump(self.gates_set_list, f, protocol=pickle.HIGHEST_PROTOCOL)
+            with open(saved_qubits_filename, 'wb') as f:
+                pickle.dump(self.qubits_set_list, f, protocol=pickle.HIGHEST_PROTOCOL)
 
 class QuantumFilters2D(QuantumFiltersBase):
     
@@ -163,30 +264,15 @@ class QuantumFilters2D(QuantumFiltersBase):
         "backend":"aer_simulator"
     }
     
-    def __init__(self, shape: tuple=(4,4), stride:float=1, shots=4096, backend='torch'):
+    def __init__(self, shape: tuple=(4,4), stride: float=1, shots: int=4096, backend: str='torch'):
 
-        super().__init__(n_dimensions=2, shape=shape)
+        super().__init__(n_dimensions=2, shape=shape, stride=stride, shots=shots, backend=backend)
 
-        self.shape = shape
-        self.stride=stride
-        self.num_filters = 1
-        self.shots=shots
-        self.backend = backend
-        if self.backend == 'torch':
-            # set CUDA for PyTorch
-            use_cuda = torch.cuda.is_available()
-            if use_cuda:
-                self.device = torch.device("cuda:0")
-                torch.cuda.set_device(int("cuda:0".split(':')[1]))
-            else:
-                self.device = torch.device("cpu")
-            
-          
     def _FRQI_encoding(self, box):
         '''
         Flexible representation of Quantum Images encoding. Takes an (nxnxn) box and returns the encoded quantum circuit. 
         This function is only used with Qiskit backends.
-            box (np.array): (nxnxn) box to be encoded
+            box (np.array): (nxn) box to be encoded
         '''
         # check if the box has the correct shape
         assert box.shape==self.shape
@@ -194,14 +280,14 @@ class QuantumFilters2D(QuantumFiltersBase):
         # Calculate binary string of basis qubits
         qbit_list = list(itertools.product([0, 1], repeat=self.nqbits-1))
         coefs = {}
-        l=0
+        l = 0
         for i in range(box.shape[0]):
             for j in range(box.shape[1]):
                 theta = box[i,j]
                 q_str = ''.join([str(q) for q in qbit_list[l]])
                 coefs[q_str + '0'] = np.cos(theta)/np.sqrt(self.shape[0]**2)
                 coefs[q_str + '1'] = np.sin(theta)/np.sqrt(self.shape[0]**2)
-                l+=1
+                l += 1
         # store them in a dictionary and sort it by keys
         coefs = list(collections.OrderedDict(sorted(coefs.items())).values())
 
@@ -321,8 +407,9 @@ class QuantumFilters2D(QuantumFiltersBase):
         '''
         # Get boxes from data
         size = self.shape[0]
-        b=np.zeros(self.shape)
-        windows = self._rollNumpy(data,b,dx=size*self.stride,dy=size*self.stride).reshape(-1,size,size)       
+        windows = self._rollNumpy(
+            data, np.zeros(self.shape), dx=size*self.stride, dy=size*self.stride
+        ).reshape(-1,size,size)       
         
         results = []
         for i in range(windows.shape[0]): # Loop through every box of the image
@@ -360,17 +447,18 @@ class QuantumFilters2D(QuantumFiltersBase):
         """
         # 0. Get rolling windows
         size = self.shape[0]
-        b=torch.zeros(self.shape)
-        windows = self._roll(data,b,dx=size*self.stride,dy=size*self.stride).reshape(-1,size,size).to(self.device)
-
+        windows = self._roll(
+            data, torch.zeros(self.shape), dx=size*self.stride, dy=size*self.stride
+        ).reshape(-1,size,size).to(self.device)
 
         # 1. Flexible representation of quantum images. Apply cos(theta)|0> + sin(theta)|1> transformation
         v1 = torch.tensor([1,0]).to(self.device)
         v2 = torch.tensor([0,1]).to(self.device)
         sq = torch.tensor([self.shape[0]**2]).to(self.device)
 
-        frqi = (torch.kron(torch.cos(windows),  v1) +
-           torch.kron(torch.sin(windows) , v2))/torch.sqrt(sq)
+        frqi = (
+            torch.kron(torch.cos(windows),  v1) + torch.kron(torch.sin(windows) , v2)
+        )/torch.sqrt(sq)
 
         # 2. Flatten the last dimension to create an initial state
         flatten = frqi.reshape(-1,2**(self.nqbits)).type(torch.complex128)
@@ -385,8 +473,9 @@ class QuantumFilters2D(QuantumFiltersBase):
 
         # 6. Reshape to original shape, taking into account transposition
         fin_shape = int(data.shape[-1]/self.stride)
-        output = partial_trace_reshaped.permute([0, 1, 3, 2, 4]).reshape((self.num_samples, 
-                                                                 fin_shape,fin_shape))
+        output = partial_trace_reshaped.permute(
+            [0, 1, 3, 2, 4]
+        ).reshape((self.num_samples, fin_shape,fin_shape))
 
         # 7. Get the probability for each state (modulus of the final state)
         output_probability = (output.conj()*output).real
@@ -394,94 +483,13 @@ class QuantumFilters2D(QuantumFiltersBase):
         # 8. Create a mask to map to zero all zero values of the original image
         mask = torch.ones(windows.shape)
         mask[np.abs(windows)<tol] = 0
-        mask = mask.reshape(self.shape_windows).permute([0, 1, 3, 2, 4]).reshape((self.num_samples,
-                                                                                      fin_shape,fin_shape)).to(self.device)
+        mask = mask.reshape(self.shape_windows).permute(
+            [0, 1, 3, 2, 4]
+        ).reshape((self.num_samples, fin_shape,fin_shape)).to(self.device)
+
         quantum_filter = output_probability*mask        
         return quantum_filter
-        
-    
-    def generate_unitaries(self, gates_name='G3', num_gates=300, num_filters=3, num_features=19, unitaries_file_name='unitaries.pickle', save=True):
-        """
-        Generates the quantum unitaries that represent the quantum reservoirs (random quantum circuits).  This function is only used with Pytorch backend.
-            gates_name (str): name of the family of quantum gates. Either G1, G2, G3 or Ising
-            num_gates (int): depth of the quantum circuits
-            num_filters (int): Number of quantum filters to apply to each feature
-            num_features (int): Number of features of the data
-            unitaries_file_name (str): name of the file containing unitary list (only needed if save=True)
-            save (bool): if True, the generated unitaries are saved to a pickle file.
-        """
-        if self.backend != 'torch':
-            raise ValueError("This function is only callable with the 'torch' backend")
-        self.U_list_filters = []
-        self.num_filters = num_filters
-        self.gates_name = gates_name
-        for i in range(num_filters):
-            U_list = []
-            for j in range(num_features):
-                # Store circuit parameters
-                self.gates_name = gates_name
-                self.num_gates = num_gates
-                # If the quantum reservoir is the Ising model
-                if gates_name=='Ising':
-                    qc = self._apply_ising_gates()
-                else: # Otherwise, if it is one of the G families
-                    gates_set, qubits_set = self._select_gates_qubits(gates_name, num_gates)
-                    # Get unitary
-                    qc = QuantumCircuit(self.nqbits)
-                    # Random quantum circuit
-                    self._apply_G_gates(qc, gates_set, qubits_set)
-                # Get unitary
-                backend = BasicAer.get_backend('unitary_simulator')
-                job = backend.run(transpile(qc, backend))
-                U = job.result().get_unitary(qc)
-                U_list.append(U)
-            self.U_list_filters.append(U_list)
-        # Save unitaries to file
-        if save:
-            with open(unitaries_file_name, 'wb') as f:
-                pickle.dump(self.U_list_filters, f, protocol=pickle.HIGHEST_PROTOCOL)
-    
-    def generate_qc(self, gates_name='G3', num_gates=300, num_filters=3, num_features=19, save=True,
-                    saved_gates_filename='gates_list2D.pickle', saved_qubits_filename='qubits_list2D.pickle'):
-        '''
-        Generate sets of random quantum gates and their associated qubits and saves them. This function is only used with Qiskit backends.
-            gates_name (str): name of the family of quantum gates. Either G1, G2, G3 or Ising
-            num_gates (int): depth of the quantum circuits
-            num_filters (int): Number of quantum filters to apply to each feature
-            num_features (int): Number of features of the data
-            save (bool): Save the gates and qubits to pickle files
-            pickle_gates_filename (str): File name for gates set
-            pickle_qubits_filename (str): File name for qubit set
-        '''
-        if self.backend == 'torch':
-            raise ValueError("This function is only callable with the Qiskit backends")
-
-        self.gates_set_list = []
-        self.qubits_set_list = [] 
-        # Store circuit parameters
-        self.gates_name = gates_name
-        self.num_gates = num_gates
-        self.num_filters = num_filters
-        self.num_features = num_features
-
-        for i in range(num_filters): # Random quantum circuit for each  filter
-            gates_list = []
-            qubits_list = []
-            for j in range(num_features): # Random quantum circuit for each  feature
-                gates_set, qubits_set = self._select_gates_qubits(gates_name, num_gates)
-                gates_list.append(gates_set)
-                qubits_list.append(qubits_set)
-            
-            self.gates_set_list.append(gates_list)
-            self.qubits_set_list.append(qubits_list)
-
-        # Save gates and qubits to file
-        if save:
-            with open(saved_gates_filename, 'wb') as f:
-                pickle.dump(self.gates_set_list, f, protocol=pickle.HIGHEST_PROTOCOL)
-            with open(saved_qubits_filename, 'wb') as f:
-                pickle.dump(self.qubits_set_list, f, protocol=pickle.HIGHEST_PROTOCOL)
-                
+          
     def load_gates(self, gates_name='G3', name_gates='gates_list.pickle', name_qubits='qubits_list.pickle'):
         '''
         Load set of quantum gates and qubits. This function is only used with Qiskit backends.
@@ -623,25 +631,10 @@ class QuantumFilters3D(QuantumFiltersBase):
         "backend":"aer_simulator"
     }
     
-    def __init__(self, shape: tuple=(4,4,4), stride:float=1, shots=4096, backend='torch'):
+    def __init__(self, shape: tuple=(4,4,4), stride: float=1, shots: int=4096, backend: str='torch'):
 
-        super().__init__(n_dimensions=3, shape=shape)
+        super().__init__(n_dimensions=3, shape=shape, stride=stride, shots=shots, backend=backend)
 
-        self.shape = shape
-        self.stride = stride
-        self.num_filters = 1
-        self.shots=shots
-        self.backend = backend
-        if self.backend == 'torch':
-            # set CUDA for PyTorch
-            use_cuda = torch.cuda.is_available()
-            if use_cuda:
-                self.device = torch.device("cuda:0")
-                torch.cuda.set_device(int("cuda:0".split(':')[1]))
-            else:
-                self.device = torch.device("cpu")
-            
-          
     def _FRQI_encoding(self, box):
         '''
         Flexible representation of Quantum Images encoding. Takes an (nxnxn) box and returns the encoded quantum circuit. 
@@ -654,7 +647,7 @@ class QuantumFilters3D(QuantumFiltersBase):
         # Calculate binary string of basis qubits
         qbit_list = list(itertools.product([0, 1], repeat=self.nqbits-1))
         coefs = {}
-        l=0
+        l = 0
         for i in range(box.shape[0]):
             for j in range(box.shape[1]):
                 for k in range(box.shape[2]):
@@ -662,7 +655,7 @@ class QuantumFilters3D(QuantumFiltersBase):
                     q_str = ''.join([str(q) for q in qbit_list[l]])
                     coefs[q_str + '0'] = np.cos(theta)/np.sqrt(self.shape[0]**3)
                     coefs[q_str + '1'] = np.sin(theta)/np.sqrt(self.shape[0]**3)
-                    l+=1
+                    l += 1
         # store them in a dictionary and sort it by keys
         coefs = list(collections.OrderedDict(sorted(coefs.items())).values())
 
@@ -751,7 +744,7 @@ class QuantumFilters3D(QuantumFiltersBase):
         # Random quantum circuit
         if self.gates_name=='Ising':
             qc_Ising = self._apply_ising_gates()
-            qc+=qc_Ising
+            qc += qc_Ising
         else:
             self._apply_G_gates(qc, gates_set, qubits_set, measure=True)
         
@@ -787,15 +780,16 @@ class QuantumFilters3D(QuantumFiltersBase):
         '''
         # Get boxes from data
         size = self.shape[0]
-        b=np.zeros(self.shape)
-        windows = self._rollNumpy(data,b,dx=size*self.stride,dy=size*self.stride,dz=size*self.stride).reshape(-1,size,size,size)       
+        windows = self._rollNumpy(
+            data, np.zeros(self.shape), dx=size*self.stride, dy=size*self.stride, dz=size*self.stride
+        ).reshape(-1,size,size,size)       
         
         results = []
         for i in range(windows.shape[0]): # Loop through every box of the image
             # If all values are zero, no need to run the algo
             box = windows[i]
             if np.sum(np.abs(box))>tol: # Run the QC if the box is non-zero valued
-                result = np.array(self._run_boxQiskit(box,  gates_set, qubits_set))
+                result = np.array(self._run_boxQiskit(box, gates_set, qubits_set))
                 result = result[:self.shape[0]**3].reshape(self.shape)
             else: # Return zeros if the box is all zero-valued
                 result = np.array([0 for i in range(self.shape[0]**3)]).reshape(self.shape)
@@ -826,17 +820,18 @@ class QuantumFilters3D(QuantumFiltersBase):
         """
         # 0. Get rolling windows
         size = self.shape[0]
-        b=torch.zeros(self.shape)
-        windows = self._roll(data,b,dx=size*self.stride,dy=size*self.stride,dz=size*self.stride).reshape(-1,size,size,size).to(self.device)
-
+        windows = self._roll(
+            data, torch.zeros(self.shape), dx=size*self.stride, dy=size*self.stride, dz=size*self.stride
+        ).reshape(-1,size,size,size).to(self.device)
 
         # 1. Flexible representation of quantum images. Apply cos(theta)|0> + sin(theta)|1> transformation
         v1 = torch.tensor([1,0]).to(self.device)
         v2 = torch.tensor([0,1]).to(self.device)
         sq = torch.tensor([self.shape[0]**3]).to(self.device)
 
-        frqi = (torch.kron(torch.cos(windows),  v1) +
-           torch.kron(torch.sin(windows) , v2))/torch.sqrt(sq)
+        frqi = (
+            torch.kron(torch.cos(windows),  v1) + torch.kron(torch.sin(windows) , v2)
+        )/torch.sqrt(sq)
 
         # 2. Flatten the last dimension to create an initial state
         flatten = frqi.reshape(-1,2**(self.nqbits)).type(torch.complex128)
@@ -851,8 +846,9 @@ class QuantumFilters3D(QuantumFiltersBase):
 
         # 6. Reshape to original shape, taking into account transposition
         fin_shape = int(data.shape[-1]/self.stride)
-        output = partial_trace_reshaped.permute([0, 1, 4, 2, 5, 3, 6]).reshape((self.num_samples, 
-                                                                 fin_shape,fin_shape,fin_shape))
+        output = partial_trace_reshaped.permute(
+            [0, 1, 4, 2, 5, 3, 6]
+        ).reshape((self.num_samples, fin_shape,fin_shape,fin_shape))
 
         # 7. Get the probability for each state (modulus of the final state)
         output_probability = (output.conj()*output).real
@@ -860,90 +856,14 @@ class QuantumFilters3D(QuantumFiltersBase):
         # 8. Create a mask to map to zero all zero values of the original image
         mask = torch.ones(windows.shape)
         mask[np.abs(windows)<tol] = 0
-        mask = mask.reshape(self.shape_windows).permute([0, 1, 4, 2, 5, 3, 6]).reshape((self.num_samples,
-                                                                                      fin_shape,fin_shape,fin_shape)).to(self.device)
+        mask = mask.reshape(self.shape_windows).permute(
+            [0, 1, 4, 2, 5, 3, 6]
+        ).reshape((self.num_samples, fin_shape,fin_shape,fin_shape)).to(self.device)
+
         quantum_filter = output_probability*mask        
         return quantum_filter
-        
     
-    def generate_unitaries(self, gates_name='G3',num_gates=300, num_filters=3, num_features=19, unitaries_file_name='unitaries.pickle', save=True):
-        """
-        Generates the quantum unitaries that represent the quantum reservoirs (random quantum circuits).  This function is only used with Pytorch backend.
-            gates_name (str): name of the family of quantum gates. Either G1, G2, G3 or Ising
-            num_gates (int): depth of the quantum circuits
-            num_filters (int): Number of quantum filters to apply to each feature
-            num_features (int): Number of features of the data
-            unitaries_file_name (str): name of the file containing unitary list (only needed if save=True)
-            save (bool): if True, the generated unitaries are saved to a pickle file.
-        """
-        if self.backend != 'torch':
-            raise ValueError("This function is only callable with the 'torch' backend")
-        self.U_list_filters = []
-        self.num_filters = num_filters
-        self.gates_name = gates_name
-        for i in range(num_filters):
-            U_list = []
-            for j in range(num_features):
-                # Store circuit parameters
-                self.gates_name = gates_name
-                self.num_gates = num_gates
-                # If the quantum reservoir is the Ising model
-                if gates_name=='Ising':
-                    qc = self._apply_ising_gates()
-                else: # Otherwise, if it is one of the G families
-                    gates_set, qubits_set = self._select_gates_qubits(gates_name, num_gates)
-                    # Get unitary
-                    qc = QuantumCircuit(self.nqbits)
-                    # Random quantum circuit
-                    self._apply_G_gates(qc, gates_set, qubits_set)
-                # Get unitary
-                backend = BasicAer.get_backend('unitary_simulator')
-                job = backend.run(transpile(qc, backend))
-                U = job.result().get_unitary(qc)
-                U_list.append(U)
-            self.U_list_filters.append(U_list)
-        # Save unitaries to file
-        if save:
-            with open(unitaries_file_name, 'wb') as f:
-                pickle.dump(self.U_list_filters, f, protocol=pickle.HIGHEST_PROTOCOL)
-    
-    def generate_qc(self, gates_name='G3', num_gates=300, num_filters=3, num_features=19, save=True,
-                    name_gates='gates_list.pickle', name_qubits = 'qubits_list.pickle'):
-        '''
-        Generate sets of random quantum gates and their associated qubits and saves them. This function is only used with Qiskit backends.
-            gates_name (str): name of the family of quantum gates. Either G1, G2, G3 or Ising
-            num_gates (int): depth of the quantum circuits
-            num_filters (int): Number of quantum filters to apply to each feature
-            num_features (int): Number of features of the data
-            save (bool): Save the gates and qubits to pickle files
-            name_gates (str): File name for gates set
-            name_qubits (str): File name for qubit set
-        '''
-        self.gates_set_list = []
-        self.qubits_set_list = [] 
-        # Store circuit parameters
-        self.gates_name = gates_name
-        self.num_gates = num_gates
-        self.num_filters = num_filters
-        self.num_features = num_features
-        for i in range(num_filters): # Random quantum circuit for each  filter
-            gates_list = []
-            qubits_list = []
-            for j in range(num_features): # Random quantum circuit for each  feature
-                gates_set, qubits_set = self._select_gates_qubits(gates_name, num_gates)
-                gates_list.append(gates_set)
-                qubits_list.append(qubits_set)
-            
-            self.gates_set_list.append(gates_list)
-            self.qubits_set_list.append(qubits_list)
-        # Save gates and qubits to file
-        if save:
-            with open(name_gates, 'wb') as f:
-                pickle.dump(self.gates_set_list, f, protocol=pickle.HIGHEST_PROTOCOL)
-            with open(name_qubits, 'wb') as f:
-                pickle.dump(self.qubits_set_list, f, protocol=pickle.HIGHEST_PROTOCOL)
-                
-    def load_gates(self, gates_name ='G3',name_gates='gates_list.pickle', name_qubits = 'qubits_list.pickle'):
+    def load_gates(self, gates_name='G3', name_gates='gates_list.pickle', name_qubits='qubits_list.pickle'):
         '''
         Load set of quantum gates and qubits. This function is only used with Qiskit backends.
             name_gates (str): File name for gates set

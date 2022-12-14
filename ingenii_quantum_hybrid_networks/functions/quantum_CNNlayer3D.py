@@ -52,7 +52,9 @@ class QuantumLayer3D(nn.Module):
         "tol": "tolerance for the masking matrix. All values from the original data which are smaller than the tolerance are set to 0.",
         "load_U":"If not None, contains the name of the file to load the stored unitaries",
         "save_U": "If load_U is None, save_U contains the name to store the unitaries",
-        "stride": "int. Stride used to move across the data"
+        "stride": "int. Stride used to move across the data",
+        "saved_gates_filename": "File name for saved gates set",
+        "saved_qubits_filename": "File name for saved qubit set",
     }
     required_parameters = {
         "shape": "(n,n,n), n integer. Box size in which the data is split to apply the quantum filter. The hilbert space is better exploit if we set n=2^l"
@@ -65,12 +67,14 @@ class QuantumLayer3D(nn.Module):
         "tol": "tolerance for the masking matrix. All values from the original data which are smaller than the tolerance are set to 0",
         "load_U":"If not None, contains the name of the file to load the stored unitaries",
         "save_U": "If load_U is None, save_U contains the name to store the unitaries",
-        "stride": "int. Stride used to move across the data"
+        "stride": "int. Stride used to move across the data",
+        "saved_gates_filename": "File name for saved gates set",
+        "saved_qubits_filename": "File name for saved qubit set",
     }
     
     def __init__(self, shape, num_filters=3,  gates_name='G3', num_gates=300, num_features = 19, tol=1e-6,
                  stride=2, shots=4096,backend ='torch',load_U=False, name_U='U.pickle',load_gates=False,
-                 name_gates='gates_list.pickle', name_qubits='qubits_list.pickle'  ):
+                 saved_gates_filename='gates_list.pickle', saved_qubits_filename='qubits_list.pickle'):
         """
         Creates the QuantumFilters3D class, generates/loads the unitaries.
         """
@@ -87,9 +91,21 @@ class QuantumLayer3D(nn.Module):
             self.use_cuda = torch.cuda.is_available()
         else:
             if load_gates:
-                self.qc_class.load_gates(name_gates, name_qubits)
+                self.qc_class.load_gates(
+                    gates_name=gates_name,
+                    name_gate=saved_gates_filename,
+                    name_qubits=saved_qubits_filename
+                )
             else:
-                self.qc_class.generate_qc(gates_name,num_gates, num_filters, num_features,True,name_gates,name_qubits)
+                self.qc_class.generate_qc(
+                    gates_name=gates_name,
+                    num_gates=num_gates,
+                    num_filters=num_filters,
+                    num_features=num_features,
+                    save=True,
+                    saved_gates_filename=saved_gates_filename,
+                    saved_qubits_filename=saved_qubits_filename
+                )
             self.use_cuda = False
                 
         self.gates_name = gates_name
