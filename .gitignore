@@ -130,3 +130,6 @@ dmypy.json
 
 # Scratch
 scratch
+
+# Pickle
+*.pickle
