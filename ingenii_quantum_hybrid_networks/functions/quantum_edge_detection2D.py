@@ -16,57 +16,11 @@ from qiskit.opflow import *
 from tqdm import tqdm
 import time
 
+from .utils import roll_numpy, roll_torch
+
 #######################################################################################################################################################################
 # QUANTUM EDGE DETECTION ALGORITHM FOR 2D IMAGES
 #######################################################################################################################################################################
-
-
-# Rolling 2D window for ND array
-def roll2D(a,      
-         b,      
-         dx=1,   
-         dy=1):   
-
-    '''
-        Rolling 2D window for ND array
-            a (np.array): input array
-            b (np.array): rolling 2D window array
-            dx (int): horizontal step, abscissa, number of columns
-            dy (int): vertical step, ordinate, number of rows
-        '''
-    shape = a.shape[:-2] + \
-            ((a.shape[-2] - b.shape[-2]) // dy + 1,) + \
-            ((a.shape[-1] - b.shape[-1]) // dx + 1,) + \
-            b.shape  # multidimensional "sausage" with 2D cross-section
-    strides = a.strides[:-2] + \
-            (a.strides[-2] * dy,) + \
-            (a.strides[-1] * dx,) + \
-              a.strides[-2:]
-
-    return np.lib.stride_tricks.as_strided(a, shape=shape, strides=strides), shape
-
-# Rolling 2D window for ND array
-def roll2DTorch(a,     
-         b,      
-         dx=1,  
-         dy=1):  
-    '''
-        Rolling 2D window for torch
-            a (np.array): input tensor
-            b (np.array): rolling 2D window array
-            dx (int): horizontal step, abscissa, number of columns
-            dy (int): vertical step, ordinate, number of rows
-        '''
-    shape = a.shape[:-2] + \
-            ((a.shape[-2] - b.shape[-2]) // dy + 1,) + \
-            ((a.shape[-1] - b.shape[-1]) // dx + 1,) + \
-            b.shape  # multidimensional "sausage" with 3D cross-section
-    strides = a.stride()[:-2] + \
-            (a.stride()[-2] * dy,) + \
-            (a.stride()[-1] * dx,) + \
-              a.stride()[-2:]
-
-    return torch.as_strided(a, shape, strides), shape
 
 class EdgeDetector2D():
     description = "Quantum Hadamard Edge Detection algorithm for 2D images. Implemented both with Qiskit to be run on real hardware, and on pytorch for quantum simulation"
@@ -196,7 +150,10 @@ class EdgeDetector2D():
         # 1. Get view of image
         # We split it into bits of (4x4x4)
         samples = data.shape[0]
-        windows, shape_aux = roll2D(data,torch.zeros((self.size,self.size)),dx=self.size,dy=self.size)
+        windows, shape_aux = roll_numpy(
+            data, torch.zeros((self.size,self.size)),
+            dx=self.size, dy=self.size
+        )
         windows = windows.reshape(-1,self.size,self.size)
        
         # 2. Run every box thorugh the QC
@@ -247,7 +204,10 @@ class EdgeDetector2D():
             start_time = time.time()
         # 1. Get view of image
         # We split it into bits of (4x4x4)
-        windows, shape_aux = roll2DTorch(data,torch.zeros((self.size,self.size)),dx=self.size,dy=self.size)
+        windows, shape_aux = roll_torch(
+            data, torch.zeros((self.size,self.size)),
+            dx=self.size, dy=self.size
+        )
         windows = windows.reshape(-1,self.size,self.size).to(self.device)
         
         # 2. Data encoding: amplitude encoding

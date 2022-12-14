@@ -16,65 +16,11 @@ from qiskit.opflow import *
 from tqdm import tqdm
 import time
 
+from utils import roll_numpy, roll_torch
+
 #######################################################################################################################################################################
 # QUANTUM EDGE DETECTION ALGORITHM FOR 3D VOLUMES
 #######################################################################################################################################################################
-
-
-# Rolling 3D window for ND array
-def roll( a,      # ND array
-         b,      # rolling 2D window array
-         dx=1,   # horizontal step, abscissa, number of columns
-         dy=1,   # vertical step, ordinate, number of rows
-         dz=1):  # transverse step, applicate, number of layers
-    '''
-        Rolling 3D window for ND array
-            a (np.array): input array
-            b (np.array): rolling 2D window array
-            dx (int): horizontal step, abscissa, number of columns
-            dy (int): vertical step, ordinate, number of rows
-            dz (int): transverse step, applicate, number of layers
-        '''
-    shape = a.shape[:-3] + \
-            ((a.shape[-3] - b.shape[-3]) // dz + 1,) + \
-            ((a.shape[-2] - b.shape[-2]) // dy + 1,) + \
-            ((a.shape[-1] - b.shape[-1]) // dx + 1,) + \
-            b.shape  # multidimensional "sausage" with 3D cross-section
-    strides = a.strides[:-3] + \
-              (a.strides[-3] * dz,) + \
-              (a.strides[-2] * dy,) + \
-              (a.strides[-1] * dx,) + \
-              a.strides[-3:]
-    #print('shape =', shape, " strides =", strides)  # for debugging
-    return np.lib.stride_tricks.as_strided(a, shape=shape, strides=strides),shape
-
-# Rolling 3D window for ND array
-def rollTorch(a,   
-         b,     
-         dx=1,  
-         dy=1,   
-         dz=1):  
-    '''
-        Rolling 3D window for ND array
-            a (np.array): input array
-            b (np.array): rolling 2D window array
-            dx (int): horizontal step, abscissa, number of columns
-            dy (int): vertical step, ordinate, number of rows
-            dz (int): transverse step, applicate, number of layers
-        '''
-    shape = a.shape[:-3] + \
-            ((a.shape[-3] - b.shape[-3]) // dz + 1,) + \
-            ((a.shape[-2] - b.shape[-2]) // dy + 1,) + \
-            ((a.shape[-1] - b.shape[-1]) // dx + 1,) + \
-            b.shape  # multidimensional "sausage" with 3D cross-section
-    strides = a.stride()[:-3] + \
-          (a.stride()[-3] * dz,) + \
-          (a.stride()[-2] * dy,) + \
-          (a.stride()[-1] * dx,) + \
-          a.stride()[-3:]
-
-    #print('shape =', shape, " strides =", strides)  # for debugging
-    return torch.as_strided(a, shape, strides), shape
 
 class EdgeDetector3D():
     description = "Quantum Hadamard Edge Detection algorithm for 3D volumes. Implemented both with Qiskit to be run on real hardware, and on pytorch for quantum simulation"
@@ -202,7 +148,10 @@ class EdgeDetector3D():
         # 1. Get view of image
         # We split it into bits of (4x4x4)
         samples = data.shape[0]
-        windows, shape_aux = roll(data,np.zeros((self.size,self.size,self.size)),dx=self.size,dy=self.size, dz=self.size)
+        windows, shape_aux = roll_numpy(
+            data, np.zeros((self.size,self.size,self.size)),
+            dx=self.size, dy=self.size, dz=self.size
+        )
         windows = windows.reshape(-1,self.size,self.size,self.size)
         
         # 2. Run every box thorugh the QC
@@ -251,7 +200,10 @@ class EdgeDetector3D():
         # 1. Get view of image
         # We split it into bits of (4x4x4)
         samples = data.shape[0]
-        rolling_image, shape_aux = rollTorch(data,torch.zeros((self.size,self.size,self.size)),dx=self.size,dy=self.size, dz=self.size)
+        rolling_image, shape_aux = roll_torch(
+            data, torch.zeros((self.size,self.size,self.size)),
+            dx=self.size, dy=self.size, dz=self.size
+        )
         rolling_image = rolling_image.reshape(samples,-1,self.size,self.size,self.size).to(self.device)
         
         # 2. Data encoding: amplitude encoding

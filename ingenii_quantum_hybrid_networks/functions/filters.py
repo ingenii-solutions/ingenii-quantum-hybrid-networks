@@ -10,8 +10,9 @@ from qiskit import opflow
 import numpy as np
 import pickle
 from random import sample
-
 import torch
+
+from .utils import roll_numpy, roll_torch
 
 
 class QuantumFiltersBase():
@@ -336,63 +337,6 @@ class QuantumFiltersBase():
         qc.initialize(initial_state, list(range(self.nqbits)))
         return qc, initial_state    
     
-    def _roll_shape_and_strides(self, a, b, dx=1, dy=1, dz=None):   
-        '''
-        Rolling 3D window for numpy array. This function is only used with Qiskit backends.
-            a (np.array): input array
-            b (np.array): rolling 2D window array
-            dx (int): horizontal step, abscissa, number of columns
-            dy (int): vertical step, ordinate, number of rows
-            dz (int): transverse step, applicate, number of layers. Only used with 3D window
-        '''
-        if dz is not None:
-            shape = a.shape[:-3] + ((a.shape[-3] - b.shape[-3]) // dz + 1,)
-            strides = a.strides[:-3] + (a.strides[-3] * dz,)
-        else:
-            shape = a.shape[:-2]
-            strides = a.strides[:-2]
-
-        shape += \
-                ((a.shape[-2] - b.shape[-2]) // dy + 1,) + \
-                ((a.shape[-1] - b.shape[-1]) // dx + 1,) + \
-                b.shape  # multidimensional "sausage" with 3D cross-section
-        strides += \
-                  (a.strides[-2] * dy,) + \
-                  (a.strides[-1] * dx,)
-
-        if dz is not None:
-            strides += a.strides[-3:]
-        else:
-            strides += a.strides[-2:]
-
-        self.shape_windows = shape
-
-        return shape, strides
-
-    def _rollNumpy(self, a, b, dx=1, dy=1, dz=None):   
-        '''
-        Rolling 3D window for numpy array. This function is only used with Qiskit backends.
-            a (np.array): input array
-            b (np.array): rolling 2D window array
-            dx (int): horizontal step, abscissa, number of columns
-            dy (int): vertical step, ordinate, number of rows
-            dz (int): transverse step, applicate, number of layers. Only used with 3D window
-        '''
-        shape, strides = self._roll_shape_and_strides(a, b, dx, dy, dz)
-        return np.lib.stride_tricks.as_strided(a, shape=shape, strides=strides)
-    
-    def _roll(self, a, b, dx=1, dy=1, dz=None):  
-        '''
-        Rolling 3D window for pytorch tensor. This function is only used with Pytorch backends.
-            a (tensor): input array, shape (n_samples, N,N,N)
-            b (tensor): rolling 3D window array, shape (n,n,n)
-            dx (int): horizontal step, abscissa, number of columns
-            dy (int): vertical step, ordinate, number of rows
-            dz (int): transverse step, applicate, number of layers
-        '''
-        shape, strides = self._roll_shape_and_strides(a, b, dx, dy, dz)
-        return torch.as_strided(a, shape, strides)
-    
     def _scale_data(self, data):
         """
         Scale the data to [0, pi/2) (each feature is scaled separately)
@@ -471,9 +415,11 @@ class QuantumFiltersBase():
             dz = size*self.stride
         
         # Get boxes from data
-        windows = self._rollNumpy(
+        strided_window, shape = roll_numpy(
             data, np.zeros(self.shape), dx=size*self.stride, dy=size*self.stride, dz=dz
-        ).reshape((-1,) + (size,) * self.n_dimensions)       
+        )
+        self.shape_windows = shape    
+        windows = strided_window.reshape((-1,) + (size,) * self.n_dimensions)
         
         def _run_per_box(box):
             if np.sum(np.abs(box)) > tol: # Run the QC if the box is non-zero valued
@@ -527,10 +473,12 @@ class QuantumFiltersBase():
             dz = size*self.stride
 
         # 0. Get rolling windows
-        windows = self._roll(
+        strided_window, shape = roll_torch(
             data, torch.zeros(self.shape),
             dx=size*self.stride, dy=size*self.stride, dz=dz
-        ).reshape(*reshape_idxs).to(self.device)
+        )
+        self.shape_windows = shape    
+        windows = strided_window.reshape(*reshape_idxs).to(self.device)
 
         # 1. Flexible representation of quantum images. Apply cos(theta)|0> + sin(theta)|1> transformation
         v1 = torch.tensor([1,0]).to(self.device)
