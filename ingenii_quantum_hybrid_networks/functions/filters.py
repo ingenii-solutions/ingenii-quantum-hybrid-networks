@@ -393,6 +393,182 @@ class QuantumFiltersBase():
         shape, strides = self._roll_shape_and_strides(a, b, dx, dy, dz)
         return torch.as_strided(a, shape, strides)
     
+    def _scale_data(self, data):
+        """
+        Scale the data to [0, pi/2) (each feature is scaled separately)
+            data (tensor): input data, shape (n_samples, num_features, N,N,N)
+        returns:
+            (tensor): scaled data, shape (n_samples, num_features, N,N,N)
+        """
+        new_min, new_max = 0, np.pi/2
+        for i in range(data.shape[0]): # Scale each feature independently
+            for j in range(data.shape[1]):
+
+                if self.n_dimensions == 2:
+                    data_slice = data[i,j,:,:]
+                elif self.n_dimensions == 3:
+                    data_slice = data[i,j,:,:,:]
+
+                v_min, v_max = data_slice.min(), data_slice.max()
+                if v_min < v_max:
+                    data_slice = (data_slice - v_min)/(v_max - v_min)*(new_max - new_min) + new_min                    
+        return data
+    
+    def _run_boxQiskit(self, box, gates_set, qubits_set):
+        '''
+        For a given box of the image runs the FRQI encoding + random quantum circuit.  This function is only used with Qiskit backends.
+            box (np.array): shape (n,n). Input data
+            gates_set (list): Set of random quantum gates
+            qubits_set (list): List of qubits to apply the quantum gates
+        '''
+        # FRQI encoding
+        qc, initial_state = self._FRQI_encoding(box)
+        
+        # Random quantum circuit
+        if self.gates_name == 'Ising':
+            qc_Ising = self._apply_ising_gates()
+            qc += qc_Ising
+        else:
+            self._apply_G_gates(qc, gates_set, qubits_set, measure=True)
+        
+        # Get counts
+        if self.backend == 'aer_simulator':
+            aer_sim = Aer.get_backend(self.backend)
+            t_qc = transpile(qc, aer_sim)
+            qobj = assemble(t_qc, shots=self.shots)
+            result = aer_sim.run(qobj).result()
+        else: # For real hardware/fake simulators
+            optimized_3 = transpile(qc, backend=self.backend, seed_transpiler=11)
+            result = self.backend.run(optimized_3, shots=self.shots).result()
+        counts = result.get_counts(qc)
+        
+        # Calculate binary string of basis qubits
+        qbit_list = list(itertools.product([0, 1], repeat=self.nqbits-1))
+        new_counts = [
+            counts.get(''.join([str(value) for value in qbit_list[l]]), 0)
+            for l in range(len(qbit_list))
+        ]
+        new_counts /= np.sum(new_counts)
+
+        return new_counts
+
+    def _run_filterQiskit(self, data, gates_set, qubits_set, tol=1e-6):
+        '''
+        Runs the quantum circuit for one feature of the data.  This function is only used with Qiskit backends.
+            data (np.array): shape (N,N), channel of the image 
+            gates_set (list): Set of random quantum gates
+            qubits_set (list): List of qubits to apply the quantum gates
+            scale (bool): Scale the input image
+        '''
+
+        size = self.shape[0]
+
+        if self.n_dimensions == 2:
+            transpose_idxs = [0, 2, 1, 3]
+            dz = None
+        elif self.n_dimensions == 3:
+            transpose_idxs = [0, 3, 1, 4, 2, 5]
+            dz = size*self.stride
+        
+        # Get boxes from data
+        windows = self._rollNumpy(
+            data, np.zeros(self.shape), dx=size*self.stride, dy=size*self.stride, dz=dz
+        ).reshape((-1,) + (size,) * self.n_dimensions)       
+        
+        def _run_per_box(box):
+            if np.sum(np.abs(box)) > tol: # Run the QC if the box is non-zero valued
+                result = np.array(self._run_boxQiskit(box, gates_set, qubits_set))
+                return result[:size**self.n_dimensions].reshape(self.shape)
+            else: # Return zeros if the box is all zero-valued
+                return np.array([0] * size**self.n_dimensions).reshape(self.shape)
+
+        results = [
+            _run_per_box(windows[i])
+            for i in range(windows.shape[0]) # Loop through every box of the image
+        ]
+        
+        fin_shape = int(data.shape[-1]/self.stride)
+        fin_shape_parameters = (fin_shape,) * self.n_dimensions
+
+        # Reshape the results in the original shape
+        results = np.array(results).reshape(self.shape_windows) # Reshape results to rolling windows shape
+        results = results.transpose(transpose_idxs).reshape(fin_shape_parameters) # Transpose to obtain original shape
+        
+        # Apply zero-mask
+        mask = np.ones(self.shape_windows) 
+        windows_reshape = windows.reshape(self.shape_windows) # Reshape to rolling windows shape
+        mask[np.abs(windows_reshape) < tol] = 0 # Find zero-valued values of the original data
+        mask = mask.reshape(self.shape_windows).transpose(transpose_idxs).reshape(fin_shape_parameters) # Transpose to return to original shape
+        results = results.astype('float64')
+        results*=mask # Apply mask
+        
+        return results
+
+    def _run_filter(self, data,tol, U):
+        """
+            Runs a quantum filter to a feature from the data samples.  This function is only used with Pytorch backend.
+                data (tensor): input data (one feature), shape (num_samples, N,N,N)
+                tol (float): tolerance for the masking matrix. All values from the original data which are smaller than the tolerance are set to 0.
+                U (tensor): Unitary matrix representing the random quantum circuit
+            returns:
+                (tensor): quantum filter applied to data
+        """
+        size = self.shape[0]
+        reshape_idxs = (-1,) + (size,) * self.n_dimensions
+
+        # Set parameters based on number of dimensions
+        if self.n_dimensions == 2:
+            einsum_equation = 'ijkl->ijk'
+            permutation_idxs = [0, 1, 3, 2, 4]
+            dz = None
+        elif self.n_dimensions == 3:
+            einsum_equation = 'ijklm->ijkl'
+            permutation_idxs = [0, 1, 4, 2, 5, 3, 6]
+            dz = size*self.stride
+
+        # 0. Get rolling windows
+        windows = self._roll(
+            data, torch.zeros(self.shape),
+            dx=size*self.stride, dy=size*self.stride, dz=dz
+        ).reshape(*reshape_idxs).to(self.device)
+
+        # 1. Flexible representation of quantum images. Apply cos(theta)|0> + sin(theta)|1> transformation
+        v1 = torch.tensor([1,0]).to(self.device)
+        v2 = torch.tensor([0,1]).to(self.device)
+        sq = torch.tensor([size**self.n_dimensions]).to(self.device)
+
+        frqi = (
+            torch.kron(torch.cos(windows), v1) + torch.kron(torch.sin(windows), v2)
+        )/torch.sqrt(sq)
+
+        # 2. Flatten the last dimension to create an initial state
+        flatten = frqi.reshape(-1,2**(self.nqbits)).type(torch.complex128)
+        # 3. Apply U rotation to each state
+        apply_U = (U @ flatten.T).reshape(reshape_idxs + (2,))
+
+        # 4. Partial trace to remove the extra qubit
+        partial_trace = torch.einsum(einsum_equation, apply_U)
+
+        # 5. Reshape back to window view
+        partial_trace_reshaped = partial_trace.reshape(self.shape_windows)
+
+        # 6. Reshape to original shape, taking into account transposition
+        fin_shape = int(data.shape[-1]/self.stride)
+        new_reshape_idxs = (self.num_samples,) + (fin_shape,) * self.n_dimensions
+        output = partial_trace_reshaped.permute(permutation_idxs).reshape(new_reshape_idxs)
+
+        # 7. Get the probability for each state (modulus of the final state)
+        output_probability = (output.conj()*output).real
+
+        # 8. Create a mask to map to zero all zero values of the original image
+        mask = torch.ones(windows.shape)
+        mask[np.abs(windows) < tol] = 0
+        mask = mask.reshape(self.shape_windows).permute(permutation_idxs) \
+            .reshape(new_reshape_idxs).to(self.device)
+
+        quantum_filter = output_probability*mask        
+        return quantum_filter
+          
 
 class QuantumFilters2D(QuantumFiltersBase):
     
@@ -430,153 +606,6 @@ class QuantumFilters2D(QuantumFiltersBase):
 
         super().__init__(n_dimensions=2, shape=shape, stride=stride, shots=shots, backend=backend)
 
-    def _scale_data(self, data):
-        """
-        Scale the data to [0, pi/2) (each feature is scaled separately)
-            data (tensor): input data, shape (n_samples, num_features, N,N,N)
-        returns:
-            (tensor): scaled data, shape (n_samples, num_features, N,N,N)
-        """
-        new_min, new_max = 0, np.pi/2
-        for i in range(data.shape[0]): # Scale each feature independently
-            for j in range(data.shape[1]):
-                v_min, v_max = data[i,j,:,:].min(), data[i,j,:,:].max()
-                if v_min < v_max:
-                    data[i,j,:,:] = (data[i,j,:,:] - v_min)/(v_max - v_min)*(new_max - new_min) + new_min                    
-        return data
-    
-    def _run_boxQiskit(self, box, gates_set, qubits_set):
-        '''
-        For a given box of the image runs the FRQI encoding + random quantum circuit.  This function is only used with Qiskit backends.
-            box (np.array): shape (n,n). Input data
-            gates_set (list): Set of random quantum gates
-            qubits_set (list): List of qubits to apply the quantum gates
-        '''
-        # FRQI encoding
-        qc, initial_state = self._FRQI_encoding(box)
-        
-        # Random quantum circuit
-        if self.gates_name=='Ising':
-            qc_Ising = self._apply_ising_gates()
-            qc += qc_Ising
-        else:
-            self._apply_G_gates(qc, gates_set, qubits_set, measure=True)
-        
-        # Get counts
-        if self.backend=='aer_simulator':
-            aer_sim = Aer.get_backend(self.backend)
-            t_qc = transpile(qc, aer_sim)
-            qobj = assemble(t_qc, shots=self.shots)
-            result = aer_sim.run(qobj).result()
-        else: # For real hardware/fake simulators
-            coupling_map = self.backend.configuration().coupling_map
-            optimized_3 = transpile(qc, backend=self.backend, seed_transpiler=11)
-            result = self.backend.run(optimized_3, shots=self.shots).result()
-        counts = result.get_counts(qc)
-        
-        # Calculate binary string of basis qubits
-        qbit_list = list(itertools.product([0, 1], repeat=self.nqbits-1))
-        new_counts = []
-        for l in range(len(qbit_list)):
-            q_str =''.join([str(value) for value in qbit_list[l]])
-            new_counts.append(counts.get(q_str, 0))
-
-        new_counts/=np.sum(new_counts)
-        return new_counts
-    
-    def _run_filterQiskit(self, data, gates_set, qubits_set, tol=1e-6):
-        '''
-        Runs the quantum circuit for one feature of the data.  This function is only used with Qiskit backends.
-            data (np.array): shape (N,N), channel of the image 
-            gates_set (list): Set of random quantum gates
-            qubits_set (list): List of qubits to apply the quantum gates
-            scale (bool): Scale the input image
-        '''
-        # Get boxes from data
-        size = self.shape[0]
-        windows = self._rollNumpy(
-            data, np.zeros(self.shape), dx=size*self.stride, dy=size*self.stride
-        ).reshape(-1,size,size)       
-        
-        results = []
-        for i in range(windows.shape[0]): # Loop through every box of the image
-            # If all values are zero, no need to run the algo
-            box = windows[i]
-            if np.sum(np.abs(box))>tol: # Run the QC if the box is non-zero valued
-                result = np.array(self._run_boxQiskit(box, gates_set, qubits_set))
-                result = result[:self.shape[0]**2].reshape(self.shape)
-            else: # Return zeros if the box is all zero-valued
-                result = np.array([0 for i in range(self.shape[0]**2)]).reshape(self.shape)
-            results.append(result)
-        
-        # Reshape the results in the original shape
-        results = np.array(results).reshape(self.shape_windows) # Reshape results to rolling windows shape
-        fin_shape = int(data.shape[-1]/self.stride)
-        results = results.transpose([0, 2, 1, 3]).reshape(fin_shape,fin_shape)# Transpose to obtain original shape
-        
-        # Apply zero-mask
-        mask = np.ones(self.shape_windows) 
-        windows_reshape = windows.reshape(self.shape_windows)# Reshape to rolling windows shape
-        mask[np.abs(windows_reshape)<tol] = 0 #Find zero-valued values of the original data
-        mask = mask.reshape(self.shape_windows).transpose([0, 2, 1, 3]).reshape((fin_shape,fin_shape))# Transpose to return to original shape
-        results = results.astype('float64')
-        results*=mask #Apply mask
-        return results
-    
-    def _run_filter(self, data,tol, U):
-        """
-            Runs a quantum filter to a feature from the data samples.  This function is only used with Pytorch backend.
-                data (tensor): input data (one feature), shape (num_samples, N,N,N)
-                tol (float): tolerance for the masking matrix. All values from the original data which are smaller than the tolerance are set to 0.
-                U (tensor): Unitary matrix representing the random quantum circuit
-            returns:
-                (tensor): quantum filter applied to data
-        """
-        # 0. Get rolling windows
-        size = self.shape[0]
-        windows = self._roll(
-            data, torch.zeros(self.shape), dx=size*self.stride, dy=size*self.stride
-        ).reshape(-1,size,size).to(self.device)
-
-        # 1. Flexible representation of quantum images. Apply cos(theta)|0> + sin(theta)|1> transformation
-        v1 = torch.tensor([1,0]).to(self.device)
-        v2 = torch.tensor([0,1]).to(self.device)
-        sq = torch.tensor([self.shape[0]**2]).to(self.device)
-
-        frqi = (
-            torch.kron(torch.cos(windows),  v1) + torch.kron(torch.sin(windows) , v2)
-        )/torch.sqrt(sq)
-
-        # 2. Flatten the last dimension to create an initial state
-        flatten = frqi.reshape(-1,2**(self.nqbits)).type(torch.complex128)
-        # 3. Apply U rotation to each state
-        apply_U = (U @ flatten.T).reshape(-1,size, size, 2)
-
-        # 4. Partial trace to remove the extra qubit
-        partial_trace = torch.einsum('ijkl->ijk', apply_U)
-
-        # 5. Reshape back to window view
-        partial_trace_reshaped = partial_trace.reshape(self.shape_windows)
-
-        # 6. Reshape to original shape, taking into account transposition
-        fin_shape = int(data.shape[-1]/self.stride)
-        output = partial_trace_reshaped.permute(
-            [0, 1, 3, 2, 4]
-        ).reshape((self.num_samples, fin_shape,fin_shape))
-
-        # 7. Get the probability for each state (modulus of the final state)
-        output_probability = (output.conj()*output).real
-
-        # 8. Create a mask to map to zero all zero values of the original image
-        mask = torch.ones(windows.shape)
-        mask[np.abs(windows)<tol] = 0
-        mask = mask.reshape(self.shape_windows).permute(
-            [0, 1, 3, 2, 4]
-        ).reshape((self.num_samples, fin_shape,fin_shape)).to(self.device)
-
-        quantum_filter = output_probability*mask        
-        return quantum_filter
-          
     def _run(self, data, tol=1e-6, n_filt=0):
         """
         Runs the quantum filters for all the features
@@ -685,153 +714,6 @@ class QuantumFilters3D(QuantumFiltersBase):
 
         super().__init__(n_dimensions=3, shape=shape, stride=stride, shots=shots, backend=backend)
 
-    def _scale_data(self, data):
-        """
-            Scale the data to [0, pi/2) (each feature is scaled separately)
-                data (tensor): input data, shape (n_samples, num_features, N,N,N)
-            returns:
-                (tensor): scaled data, shape (n_samples, num_features, N,N,N)
-        """
-        new_min, new_max = 0, np.pi/2
-        for i in range(data.shape[0]):# Scale each feature independently
-            for j in range(data.shape[1]):
-                v_min, v_max = data[i,j,:,:,:].min(), data[i,j,:,:,:].max()
-                if v_min < v_max:
-                    data[i,j,:,:,:] = (data[i,j,:,:,:] - v_min)/(v_max - v_min)*(new_max - new_min) + new_min                    
-        return data
-    
-    def _run_boxQiskit(self, box, gates_set, qubits_set):
-        '''
-        For a given box of the image runs the FRQI encoding + random quantum circuit.  This function is only used with Qiskit backends.
-            box (np.array): input data
-            gates_set (list): Set of random quantum gates
-            qubits_set (list): List of qubits to apply the quantum gates
-        '''
-        # FRQI encoding
-        qc, initial_state = self._FRQI_encoding(box)
-        
-        # Random quantum circuit
-        if self.gates_name=='Ising':
-            qc_Ising = self._apply_ising_gates()
-            qc += qc_Ising
-        else:
-            self._apply_G_gates(qc, gates_set, qubits_set, measure=True)
-        
-        # Get counts
-        if self.backend=='aer_simulator':
-            aer_sim = Aer.get_backend(self.backend)
-            t_qc = transpile(qc, aer_sim)
-            qobj = assemble(t_qc, shots=self.shots)
-            result = aer_sim.run(qobj).result()
-        else: # For real hardware/fake simulators
-            coupling_map = self.backend.configuration().coupling_map
-            optimized_3 = transpile(qc, backend=self.backend, seed_transpiler=11)
-            result = self.backend.run(optimized_3, shots=self.shots).result()
-        counts = result.get_counts(qc)
-        
-        # Calculate binary string of basis qubits
-        qbit_list = list(itertools.product([0, 1], repeat=self.nqbits-1))
-        new_counts = []
-        for l in range(len(qbit_list)):
-            q_str =''.join([str(value) for value in qbit_list[l]])
-            new_counts.append(counts.get(q_str, 0))
-
-        new_counts/=np.sum(new_counts)
-        return new_counts
-    
-    def _run_filterQiskit(self, data, gates_set, qubits_set, tol=1e-6):
-        '''
-        Runs the quantum circuit for one feature of the data.  This function is only used with Qiskit backends.
-            data (np.array): shape (N,N,N), channel of the image 
-            gates_set (list): Set of random quantum gates
-            qubits_set (list): List of qubits to apply the quantum gates
-            scale (bool): Scale the input image
-        '''
-        # Get boxes from data
-        size = self.shape[0]
-        windows = self._rollNumpy(
-            data, np.zeros(self.shape), dx=size*self.stride, dy=size*self.stride, dz=size*self.stride
-        ).reshape(-1,size,size,size)       
-        
-        results = []
-        for i in range(windows.shape[0]): # Loop through every box of the image
-            # If all values are zero, no need to run the algo
-            box = windows[i]
-            if np.sum(np.abs(box))>tol: # Run the QC if the box is non-zero valued
-                result = np.array(self._run_boxQiskit(box, gates_set, qubits_set))
-                result = result[:self.shape[0]**3].reshape(self.shape)
-            else: # Return zeros if the box is all zero-valued
-                result = np.array([0 for i in range(self.shape[0]**3)]).reshape(self.shape)
-            results.append(result)
-        
-        # Reshape the results in the original shape
-        results = np.array(results).reshape(self.shape_windows) # Reshape results to rolling windows shape
-        fin_shape = int(data.shape[-1]/self.stride)
-        results = results.transpose([0, 3, 1, 4, 2, 5]).reshape(fin_shape,fin_shape,fin_shape)# Transpose to obtain original shape
-        
-        # Apply zero-mask
-        mask = np.ones(self.shape_windows) 
-        windows_reshape = windows.reshape(self.shape_windows)# Reshape to rolling windows shape
-        mask[np.abs(windows_reshape)<tol] = 0 #Find zero-valued values of the original data
-        mask = mask.reshape(self.shape_windows).transpose([0, 3, 1, 4, 2, 5]).reshape((fin_shape,fin_shape,fin_shape))# Transpose to return to original shape
-        results = results.astype('float64')
-        results*=mask #Apply mask
-        return results
-    
-    def _run_filter(self, data,tol, U):
-        """
-            Runs a quantum filter to a feature from the data samples.  This function is only used with Pytorch backend.
-                data (tensor): input data (one feature), shape (num_samples, N,N,N)
-                tol (float): tolerance for the masking matrix. All values from the original data which are smaller than the tolerance are set to 0.
-                U (tensor): Unitary matrix representing the random quantum circuit
-            returns:
-                (tensor): quantum filter applied to data
-        """
-        # 0. Get rolling windows
-        size = self.shape[0]
-        windows = self._roll(
-            data, torch.zeros(self.shape), dx=size*self.stride, dy=size*self.stride, dz=size*self.stride
-        ).reshape(-1,size,size,size).to(self.device)
-
-        # 1. Flexible representation of quantum images. Apply cos(theta)|0> + sin(theta)|1> transformation
-        v1 = torch.tensor([1,0]).to(self.device)
-        v2 = torch.tensor([0,1]).to(self.device)
-        sq = torch.tensor([self.shape[0]**3]).to(self.device)
-
-        frqi = (
-            torch.kron(torch.cos(windows),  v1) + torch.kron(torch.sin(windows) , v2)
-        )/torch.sqrt(sq)
-
-        # 2. Flatten the last dimension to create an initial state
-        flatten = frqi.reshape(-1,2**(self.nqbits)).type(torch.complex128)
-        # 3. Apply U rotation to each state
-        apply_U = (U @ flatten.T).reshape(-1,size, size, size, 2)
-
-        # 4. Partial trace to remove the extra qubit
-        partial_trace = torch.einsum('ijklm->ijkl', apply_U)
-
-        # 5. Reshape back to window view
-        partial_trace_reshaped = partial_trace.reshape(self.shape_windows)
-
-        # 6. Reshape to original shape, taking into account transposition
-        fin_shape = int(data.shape[-1]/self.stride)
-        output = partial_trace_reshaped.permute(
-            [0, 1, 4, 2, 5, 3, 6]
-        ).reshape((self.num_samples, fin_shape,fin_shape,fin_shape))
-
-        # 7. Get the probability for each state (modulus of the final state)
-        output_probability = (output.conj()*output).real
-
-        # 8. Create a mask to map to zero all zero values of the original image
-        mask = torch.ones(windows.shape)
-        mask[np.abs(windows)<tol] = 0
-        mask = mask.reshape(self.shape_windows).permute(
-            [0, 1, 4, 2, 5, 3, 6]
-        ).reshape((self.num_samples, fin_shape,fin_shape,fin_shape)).to(self.device)
-
-        quantum_filter = output_probability*mask        
-        return quantum_filter
-    
     def _run(self, data, tol=1e-6, n_filt=0):
         """
         Runs the quantum filters for all the features
