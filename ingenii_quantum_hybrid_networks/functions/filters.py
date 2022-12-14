@@ -658,7 +658,7 @@ class QuantumFilters2D(QuantumFiltersBase):
         returns:
             (tensor/np.array): output quantum filters
         """
-        if len(data.shape)!=4:
+        if len(data.shape) != self.n_dimensions + 2:
             raise ValueError('Incorrect data shape. The data should have shape (num_samples, num_features, N,N)')
         all_results = [
             self._run(data, tol, n_filt=i)
@@ -666,27 +666,29 @@ class QuantumFilters2D(QuantumFiltersBase):
         ]
 
         # Reshape final array
-        if self.backend=='torch':
+        if self.backend == 'torch':
+            result_shape = all_results[0].shape
             results_reshape = torch.zeros([
-                all_results[0].shape[0],
-                all_results[0].shape[1]*self.num_filters,
-                all_results[0].shape[2],all_results[0].shape[3]
+                result_shape[0],
+                result_shape[1]*self.num_filters,
+                result_shape[2],
+                result_shape[3]
             ])
-            for i in range(self.num_filters):
+            for i, result in enumerate(all_results):
                 results_reshape[
                     :,
-                    ((all_results[0].shape[1])*i):(all_results[0].shape[1])*(i + 1),
+                    ((result_shape[1])*i):(result_shape[1])*(i + 1),
                     :,
                     :
-                ] = all_results[i]
+                ] = result
     
         else:
             all_results = np.array(all_results)
             results_reshape = all_results.reshape(
-                all_results[0].shape[0],
-                all_results[0].shape[1]*self.num_filters,
-                all_results[0].shape[2],
-                all_results[0].shape[3]
+                all_results.shape[0],
+                all_results.shape[1]*self.num_filters,
+                all_results.shape[2],
+                all_results.shape[3]
             )
 
         return results_reshape
@@ -738,19 +740,37 @@ class QuantumFilters3D(QuantumFiltersBase):
         """
         if len(data.shape)!=5:
             raise ValueError('Incorrect data shape. The data should have shape (num_samples, num_features, N,N,N)')
-        all_results = []
-        for i in range(self.num_filters): # Run for each number of filters
-            all_results.append(self._run( data, tol, n_filt=i))
+        all_results = [
+            self._run(data, tol, n_filt=i)
+            for i in range(self.num_filters) # Run for each number of filters
+        ]
                 
         # Reshape final array
         if self.backend=='torch':
-            results_reshape = torch.zeros([all_results[0].shape[0], all_results[0].shape[1]*len(all_results),
-                               all_results[0].shape[2],all_results[0].shape[3],all_results[0].shape[4] ])
-            for i in range(1,len(all_results)+1):
-                results_reshape[:,((all_results[0].shape[1])*(i-1)):(all_results[0].shape[1])*i,:,:,:] = all_results[i-1]
+            result_shape = all_results[0].shape
+            results_reshape = torch.zeros([
+                result_shape[0],
+                result_shape[1]*self.num_filters,
+                result_shape[2],
+                result_shape[3],
+                result_shape[4]
+            ])
+            for i, result in enumerate(all_results):
+                results_reshape[
+                    :,
+                    ((result_shape[1])*i):(result_shape[1])*(i + 1),
+                    :,
+                    :,
+                    :
+                ] = result
     
         else:
             all_results = np.array(all_results)
-            results_reshape = all_results.reshape(all_results.shape[1], self.num_filters*all_results.shape[2],
-                                              all_results.shape[3],all_results.shape[3],all_results.shape[3])      
+            results_reshape = all_results.reshape(
+                all_results.shape[1],
+                all_results.shape[2]*self.num_filters,
+                all_results.shape[3],
+                all_results.shape[3],
+                all_results.shape[3]
+            )      
         return results_reshape
