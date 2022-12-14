@@ -1,25 +1,18 @@
-import random
-import numpy as np
+import collections
+import itertools
 
-import qiskit 
 from qiskit import QuantumCircuit, QuantumRegister, ClassicalRegister
 from qiskit.circuit import Parameter
-from qiskit import BasicAer, Aer
-from qiskit import transpile, assemble
-from qiskit.quantum_info import Statevector
-import itertools
+from qiskit import BasicAer, Aer, assemble, transpile
 from qiskit.quantum_info import Pauli
 from qiskit.opflow import *
-from sklearn.preprocessing import MinMaxScaler
+
+import numpy as np
+import pickle
+from random import sample
 
 import torch
 from torch.autograd import Function
-import torch.optim as optim
-import torch.nn as nn
-import torch.nn.functional as F
-import pickle
-import time
-import collections
 
 class QuantumFilters2D():
     
@@ -257,18 +250,18 @@ class QuantumFilters2D():
         qubit_idx = list(range(self.nqbits))
         for i in range(self.num_gates):
             # Select random gate
-            gate = random.sample(gates,1)[0] 
+            gate = sample(gates,1)[0] 
             self.gates_set.append(gate)
             if gate=='CNOT':
                 # Select qubit 1 and 2 (different qubits)
-                qbit1 = random.sample(qubit_idx,1)[0]
+                qbit1 = sample(qubit_idx,1)[0]
                 qubit_idx2 = qubit_idx.copy()
                 qubit_idx2.remove(qbit1)
-                qbit2 = random.sample(qubit_idx2,1)[0]
+                qbit2 = sample(qubit_idx2,1)[0]
                 self.qubits_set.append([qbit1, qbit2])
             else:
                 # Select qubit
-                qbit = random.sample(qubit_idx,1)[0]
+                qbit = sample(qubit_idx,1)[0]
                 self.qubits_set.append([qbit])
                       
     def _run_boxQiskit(self, box, gates_set, qubits_set):
@@ -480,7 +473,7 @@ class QuantumFilters2D():
             with open(name_qubits, 'wb') as f:
                 pickle.dump(self.qubits_set_list, f, protocol=pickle.HIGHEST_PROTOCOL)
                 
-    def load_gates(self, gates_name ='G3',name_gates='gates_list.pickle', name_qubits = 'qubits_list.pickle'):
+    def load_gates(self, gates_name='G3', name_gates='gates_list.pickle', name_qubits='qubits_list.pickle'):
         '''
         Load set of quantum gates and qubits. This function is only used with Qiskit backends.
             name_gates (str): File name for gates set
@@ -491,9 +484,9 @@ class QuantumFilters2D():
             
         with open(name_gates, 'rb') as f:
             self.gates_set_list = pickle.load(f)    
-
         with open(name_qubits, 'rb') as f:
             self.qubits_set_list = pickle.load(f) 
+
         # Store circuit parameters
         self.num_filters = len(self.gates_set_list)
         self.num_features = len(self.gates_set_list[0])
@@ -557,21 +550,35 @@ class QuantumFilters2D():
         """
         if len(data.shape)!=4:
             raise ValueError('Incorrect data shape. The data should have shape (num_samples, num_features, N,N)')
-        all_results = []
-        for i in range(self.num_filters): # Run for each number of filters
-            all_results.append(self._run( data, tol, n_filt=i))
-                
+        all_results = [
+            self._run(data, tol, n_filt=i)
+            for i in range(self.num_filters) # Run for each number of filters
+        ]
+
         # Reshape final array
         if self.backend=='torch':
-            results_reshape = torch.zeros([all_results[0].shape[0], all_results[0].shape[1]*len(all_results),
-                               all_results[0].shape[2],all_results[0].shape[3]])
-            for i in range(1,len(all_results)+1):
-                results_reshape[:,((all_results[0].shape[1])*(i-1)):(all_results[0].shape[1])*i,:,:] = all_results[i-1]
+            results_reshape = torch.zeros([
+                all_results[0].shape[0],
+                all_results[0].shape[1]*self.num_filters,
+                all_results[0].shape[2],all_results[0].shape[3]
+            ])
+            for i in range(self.num_filters):
+                results_reshape[
+                    :,
+                    ((all_results[0].shape[1])*i):(all_results[0].shape[1])*(i + 1),
+                    :,
+                    :
+                ] = all_results[i]
     
         else:
             all_results = np.array(all_results)
-            results_reshape = all_results.reshape(all_results[0].shape[0], all_results[0].shape[1]*len(all_results),
-                               all_results[0].shape[2],all_results[0].shape[3])      
+            results_reshape = all_results.reshape(
+                all_results[0].shape[0],
+                all_results[0].shape[1]*self.num_filters,
+                all_results[0].shape[2],
+                all_results[0].shape[3]
+            )
+
         return results_reshape
 
 
@@ -611,7 +618,7 @@ class QuantumFunction2D(Function):
         
         
         
-class QuantumLayer2D(nn.Module):
+class QuantumLayer2D(torch.nn.Module): #, QuantumFilters2D):
     description = "Hybrid quantum - classical layer definition "
     class_parameters = {
         "shape": "(n,n), n integer. Box size in which the data is split to apply the quantum filter. The hilbert space is better exploit if we set n=2^l",
@@ -640,7 +647,7 @@ class QuantumLayer2D(nn.Module):
     
     def __init__(self, shape, num_filters=3,  gates_name='G3', num_gates=300, num_features = 19, tol=1e-6,
                  stride=2, shots=4096,backend ='torch',load_U=False, name_U='U.pickle',load_gates=False,
-                 name_gates='gates_list.pickle', name_qubits = 'qubits_list.pickle'  ):
+                 name_gates='gates_list.pickle', name_qubits='qubits_list.pickle'  ):
         """
         Creates the QuantumFilters3D class, generates/loads the unitaries.
         """
@@ -650,14 +657,18 @@ class QuantumLayer2D(nn.Module):
         self.shots = shots
 
         if self.backend=='torch':
-            if load_U:# Load unitaries
+            if load_U: # Load unitaries
                 self.qc_class.load_unitaries(load_U)
-            else:# Initialize unitaries
+            else: # Initialize unitaries
                 self.qc_class.generate_unitaries(gates_name,num_gates, num_filters, num_features, name=name_U)
             self.use_cuda = torch.cuda.is_available()
         else:
             if load_gates:
-                self.qc_class.load_gates(load_gates,load_qubits)
+                self.qc_class.load_gates(
+                    gates_name=gates_name,
+                    name_gates=name_gates,
+                    name_gates=name_qubits
+                )
             else:
                 self.qc_class.generate_qc(gates_name,num_gates, num_filters, num_features,True,name_gates,name_qubits)
             self.use_cuda = False

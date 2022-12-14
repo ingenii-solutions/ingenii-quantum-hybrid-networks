@@ -656,7 +656,7 @@ class QuantumLayer3D(nn.Module):
             self.use_cuda = torch.cuda.is_available()
         else:
             if load_gates:
-                self.qc_class.load_gates(load_gates,load_qubits)
+                self.qc_class.load_gates(name_gates, name_qubits)
             else:
                 self.qc_class.generate_qc(gates_name,num_gates, num_filters, num_features,True,name_gates,name_qubits)
             self.use_cuda = False
