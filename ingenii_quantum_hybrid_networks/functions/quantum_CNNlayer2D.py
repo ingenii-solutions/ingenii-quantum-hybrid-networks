@@ -48,8 +48,7 @@ class QuantumLayer2D(torch.nn.Module): #, QuantumFilters2D):
         "gates_name": "Name of family of quantum gates. Implemented: G1, G2, G3, Ising",
         "num_features": "Number of features of the input data",
         "tol": "tolerance for the masking matrix. All values from the original data which are smaller than the tolerance are set to 0.",
-        "load_U":"If not None, contains the name of the file to load the stored unitaries",
-        "save_U": "If load_U is None, save_U contains the name to store the unitaries",
+        "load_unitaries_file_name":"If not None, contains the name of the file to load the stored unitaries",
         "stride": "int. Stride used to move across the data",
         "saved_gates_filename": "File name for saved gates set",
         "saved_qubits_filename": "File name for saved qubit set",
@@ -63,16 +62,16 @@ class QuantumLayer2D(torch.nn.Module): #, QuantumFilters2D):
         "gates_name": "Name of family of quantum gates. Implemented: G1, G2, G3, Ising",
         "num_features": "Number of features of the input data",
         "tol": "tolerance for the masking matrix. All values from the original data which are smaller than the tolerance are set to 0",
-        "load_U":"If not None, contains the name of the file to load the stored unitaries",
-        "save_U": "If load_U is None, save_U contains the name to store the unitaries",
+        "load_unitaries_file_name":"If not None, contains the name of the file to load the stored unitaries",
         "stride": "int. Stride used to move across the data",
         "saved_gates_filename": "File name for saved gates set",
         "saved_qubits_filename": "File name for saved qubit set",
     }
     
     def __init__(self, shape, num_filters=3,  gates_name='G3', num_gates=300, num_features = 19, tol=1e-6,
-                 stride=2, shots=4096, backend='torch', load_U=False, name_U='U.pickle',load_gates=False,
-                 saved_gates_filename='gates_list.pickle', saved_qubits_filename='qubits_list.pickle'):
+                 stride=2, shots=4096, backend='torch',
+                 load_unitaries_file_name=None, unitaries_file_name='unitaries.pickle',
+                 load_gates=False, saved_gates_filename='gates_list.pickle', saved_qubits_filename='qubits_list.pickle'):
         """
         Creates the QuantumFilters3D class, generates/loads the unitaries.
         """
@@ -82,17 +81,23 @@ class QuantumLayer2D(torch.nn.Module): #, QuantumFilters2D):
         self.shots = shots
 
         if self.backend=='torch':
-            if load_U: # Load unitaries
-                self.qc_class.load_unitaries(load_U)
+            if load_unitaries_file_name: # Load unitaries
+                self.qc_class.load_unitaries(load_unitaries_file_name)
             else: # Initialize unitaries
-                self.qc_class.generate_unitaries(gates_name,num_gates, num_filters, num_features, unitaries_file_name=name_U)
+                self.qc_class.generate_unitaries(
+                    gates_name=gates_name,
+                    num_gates=num_gates,
+                    num_filters=num_filters,
+                    num_features=num_features,
+                    unitaries_file_name=unitaries_file_name
+                )
             self.use_cuda = torch.cuda.is_available()
         else:
             if load_gates:
                 self.qc_class.load_gates(
                     gates_name=gates_name,
-                    name_gates=saved_gates_filename,
-                    name_qubits=saved_qubits_filename
+                    saved_gates_filename=saved_gates_filename,
+                    saved_qubits_filename=saved_qubits_filename
                 )
             else:
                 self.qc_class.generate_qc(

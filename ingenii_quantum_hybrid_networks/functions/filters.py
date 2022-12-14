@@ -23,7 +23,6 @@ class QuantumFiltersBase():
         
         self.shape = shape
         self.stride = stride
-        self.num_filters = 1
         self.shots = shots
 
         self.backend = backend
@@ -35,6 +34,11 @@ class QuantumFiltersBase():
                 torch.cuda.set_device(int("cuda:0".split(':')[1]))
             else:
                 self.device = torch.device("cpu")
+        
+        # Initialise
+        self.unitaries_list = []
+        self.num_filters = 0
+        self.num_features = 0
 
     gate_names = {
         "G1": ["CNOT", "H", "X"],
@@ -44,9 +48,9 @@ class QuantumFiltersBase():
 
     def _select_gates_qubits(self, gates_name, num_gates):
         """
-            Selects random gates from the G1, G2 and G3 family, and the qubits to which the gates are applied to.
-            gates_name (str): name of the family of quantum gates. Either G1, G2, G3 or Ising
-            num_gates (int): depth of the quantum circuits
+        Selects random gates from the G1, G2 and G3 family, and the qubits to which the gates are applied to.
+        gates_name (str): name of the family of quantum gates. Either G1, G2, G3 or Ising
+        num_gates (int): depth of the quantum circuits
         """
         # Select random gate
         gates = self.gate_names[gates_name]
@@ -160,7 +164,7 @@ class QuantumFiltersBase():
         """
         if self.backend != 'torch':
             raise ValueError("This function is only callable with the 'torch' backend")
-        self.U_list_filters = []
+        self.unitaries_list = []
         self.num_filters = num_filters
         self.gates_name = gates_name
         for i in range(num_filters):
@@ -182,11 +186,18 @@ class QuantumFiltersBase():
                 job = backend.run(transpile(qc, backend))
                 U = job.result().get_unitary(qc)
                 U_list.append(U)
-            self.U_list_filters.append(U_list)
+            self.unitaries_list.append(U_list)
         # Save unitaries to file
         if save:
             with open(unitaries_file_name, 'wb') as f:
-                pickle.dump(self.U_list_filters, f, protocol=pickle.HIGHEST_PROTOCOL)
+                pickle.dump(self.unitaries_list, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+    def _check_file_names(self, saved_gates_filename, saved_qubits_filename):
+
+        saved_gates_filename = saved_gates_filename or f'gates_list_{self.n_dimensions}D.pickle'
+        saved_qubits_filename = saved_qubits_filename or f'qubits_list_{self.n_dimensions}D.pickle'
+
+        return saved_gates_filename, saved_qubits_filename
 
     def generate_qc(self, gates_name='G3', num_gates=300, num_filters=3, num_features=19, save=True,
                     saved_gates_filename=None, saved_qubits_filename=None):
@@ -203,8 +214,8 @@ class QuantumFiltersBase():
         if self.backend == 'torch':
             raise ValueError("This function is only callable with the Qiskit backends")
 
-        saved_gates_filename = saved_gates_filename or f'gates_list_{self.n_dimensions}D.pickle'
-        saved_qubits_filename = saved_qubits_filename or f'qubits_list_{self.n_dimensions}D.pickle'
+        saved_gates_filename, saved_qubits_filename = \
+            self._check_file_names(saved_gates_filename, saved_qubits_filename)
 
         self.gates_set_list = []
         self.qubits_set_list = [] 
@@ -232,6 +243,55 @@ class QuantumFiltersBase():
             with open(saved_qubits_filename, 'wb') as f:
                 pickle.dump(self.qubits_set_list, f, protocol=pickle.HIGHEST_PROTOCOL)
 
+    def load_gates(self, gates_name='G3', saved_gates_filename=None, saved_qubits_filename=None):
+        '''
+        Load set of quantum gates and qubits. This function is only used with Qiskit backends.
+            gates_name (str): name of the family of quantum gates. Either G1, G2, G3 or Ising
+            saved_gates_filename (str): File name for saved gates set
+            saved_qubits_filename (str): File name for saved qubit set
+        '''
+       
+        saved_gates_filename, saved_qubits_filename = \
+            self._check_file_names(saved_gates_filename, saved_qubits_filename)
+
+        if self.backend == 'torch':
+            raise ValueError("This function is only callable whith the Qiskit backends")
+            
+        with open(saved_gates_filename, 'rb') as f:
+            self.gates_set_list = pickle.load(f)    
+        with open(saved_qubits_filename, 'rb') as f:
+            self.qubits_set_list = pickle.load(f) 
+
+        # Store circuit parameters
+        self.num_filters = len(self.gates_set_list)
+        self.num_features = len(self.gates_set_list[0])
+        self.num_gates = len(self.gates_set_list[0][0])
+        self.gates_name = gates_name
+        nqbits = max(max(max(max(self.qubits_set_list)))) + 1
+
+        if nqbits != self.nqbits:
+            raise ValueError('Incorrect number of qubits of the loaded quantum circuits')
+
+    def load_unitaries(self, file_name):
+        '''
+        Loads the unitaries.  This function is only used with Pytorch backend.
+            file_name (str): File name for unitaries
+        '''
+        if self.backend != 'torch':
+            raise ValueError("This function is only callable with the 'torch' backend")
+            
+        with open(file_name, 'rb') as f:
+            self.unitaries_list = pickle.load(f)
+            
+        # Store circuit parameters 
+        self.num_filters = len(self.unitaries_list)
+        self.num_features = len(self.unitaries_list[0])
+        nqbits = int(np.ceil(np.log2(self.unitaries_list[0][0].shape[0])))
+
+        if nqbits != self.nqbits:
+            raise ValueError('Incorrect number of qubits of the loaded quantum circuits')
+                
+
 class QuantumFilters2D(QuantumFiltersBase):
     
     description = "Applies a quantum filter to a 2D image.  Quantum data encoding: Flexible Representation of Quantum Images. Quantum transformation: quantum reservoirs with fixed number of gates. Implemented: G1 = {CNOT, H, X}, G2 = {CNOT, H, S}, and G3={CNOT,H,T} and evolution under the transverse field Ising model. The code is designed to run either in a Qiskit backend or with Pytorch."
@@ -245,7 +305,7 @@ class QuantumFilters2D(QuantumFiltersBase):
         "num_gates": "Number of quantum gates of the quantum reservoir",
         "gates_set": "List of quantum gates that form the quantum reservoir",
         "qubits_set":"List of qubits to which the quantum gates are applied to",
-        "U_list_filters": "list of all the quantum unitaries that define the quantum reservoirs. The list has shape (num_filters, num_features, nqbits, nqbits). Only used if backend is torch.",
+        "unitaries_list": "list of all the quantum unitaries that define the quantum reservoirs. The list has shape (num_filters, num_features, nqbits, nqbits). Only used if backend is torch.",
         "shape_windows": "shape of the sliding windows",
         "shots": "Number of shots per experiment (only Qiskit backends)",
         "backend": "Backend where to run the code. Either Qiskit bachend or torch"
@@ -490,47 +550,6 @@ class QuantumFilters2D(QuantumFiltersBase):
         quantum_filter = output_probability*mask        
         return quantum_filter
           
-    def load_gates(self, gates_name='G3', name_gates='gates_list.pickle', name_qubits='qubits_list.pickle'):
-        '''
-        Load set of quantum gates and qubits. This function is only used with Qiskit backends.
-            name_gates (str): File name for gates set
-            name_qubits (str): File name for qubit set
-        '''
-        if self.backend=='torch':
-            raise ValueError("This function is only callable whith the Qiskit backends")
-            
-        with open(name_gates, 'rb') as f:
-            self.gates_set_list = pickle.load(f)    
-        with open(name_qubits, 'rb') as f:
-            self.qubits_set_list = pickle.load(f) 
-
-        # Store circuit parameters
-        self.num_filters = len(self.gates_set_list)
-        self.num_features = len(self.gates_set_list[0])
-        self.num_gates = len(self.gates_set_list[0][0])
-        self.gates_name = gates_name
-        nqbits = max(max(max(max(self.qubits_set_list))))+1
-        if nqbits!=self.nqbits:
-            raise ValueError('Incorrect number of qubits of the loaded quantum circuits')
-            
-    def load_unitaries(self, name):
-        '''
-        Loads the unitaries.  This function is only used with Pytorch backend.
-            name (str): File name for unitaries
-        '''
-        if self.backend!='torch':
-            raise ValueError("This function is only callable whith the 'torch' backend")
-            
-        with open(name, 'rb') as f:
-            self.U_list_filters = pickle.load(f)
-            
-        # Store circuit parameters 
-        self.num_filters = len(self.U_list_filters)
-        self.num_features = len(self.U_list_filters[0])
-        nqbits = int(np.ceil(np.log2(self.U_list_filters[0][0].shape[0])))     
-        if nqbits!=self.nqbits:
-            raise ValueError('Incorrect number of qubits of the loaded quantum circuits')
-                
     def _run(self, data, tol=1e-6, n_filt=0):
         """
         Runs the quantum filters for all the features
@@ -548,7 +567,7 @@ class QuantumFilters2D(QuantumFiltersBase):
             data_out = torch.zeros((data.shape[0], data.shape[1],fin_shape,fin_shape))
             for i in range(data.shape[1]): # Run for every feature
                 data_out[:,i,:,:] = self._run_filter(data_scaled[:,i,:,:],
-                                  tol, torch.tensor(self.U_list_filters[n_filt][i]).to(self.device))
+                                  tol, torch.tensor(self.unitaries_list[n_filt][i]).to(self.device))
         else:
             data_out = np.zeros((data.shape[0], data.shape[1],fin_shape,fin_shape))
             for i in range(data.shape[0]):    
@@ -612,7 +631,7 @@ class QuantumFilters3D(QuantumFiltersBase):
         "num_gates": "Number of quantum gates of the quantum reservoir",
         "gates_set": "List of quantum gates that form the quantum reservoir",
         "qubits_set":"List of qubits to which the quantum gates are applied to",
-        "U_list_filters": "list of all the quantum unitaries that define the quantum reservoirs. The list has shape (num_filters, num_features, nqbits, nqbits). Only used if backend is torch.",
+        "unitaries_list": "list of all the quantum unitaries that define the quantum reservoirs. The list has shape (num_filters, num_features, nqbits, nqbits). Only used if backend is torch.",
         "shape_windows": "shape of the sliding windows",
         "shots": "Number of shots per experiment (only Qiskit backends)",
         "backend": "Backend where to run the code. Either Qiskit bachend or torch"
@@ -863,41 +882,6 @@ class QuantumFilters3D(QuantumFiltersBase):
         quantum_filter = output_probability*mask        
         return quantum_filter
     
-    def load_gates(self, gates_name='G3', name_gates='gates_list.pickle', name_qubits='qubits_list.pickle'):
-        '''
-        Load set of quantum gates and qubits. This function is only used with Qiskit backends.
-            name_gates (str): File name for gates set
-            name_qubits (str): File name for qubit set
-        '''
-        with open(name_gates, 'rb') as f:
-            self.gates_set_list = pickle.load(f)    
-
-        with open(name_qubits, 'rb') as f:
-            self.qubits_set_list = pickle.load(f) 
-        # Sotre circuit parameters
-        self.num_filters = len(self.gates_set_list)
-        self.num_features = len(self.gates_set_list[0])
-        self.num_gates = len(self.gates_set_list[0][0])
-        self.gates_name = gates_name
-        nqbits = max(max(max(max(self.qubits_set_list))))+1
-        if nqbits!=self.nqbits:
-            raise ValueError('Incorrect number of qubits of the loaded quantum circuits')
-            
-    def load_unitaries(self, name):
-        '''
-        Loads the unitaries.  This function is only used with Pytorch backend.
-            name (str): File name for unitaries
-        '''
-        with open(name, 'rb') as f:
-            self.U_list_filters = pickle.load(f)
-        # Store circuit parameters 
-        self.num_filters = len(self.U_list_filters)
-        self.num_features = len(self.U_list_filters[0])
-        nqbits = int(np.ceil(np.log2(self.U_list_filters[0][0].shape[0])))     
-        if nqbits!=self.nqbits:
-            raise ValueError('Incorrect number of qubits of the loaded quantum circuits', nqbits, self.nqbits)
-                
-                
     def _run(self, data, tol=1e-6, n_filt=0):
         """
         Runs the quantum filters for all the features
@@ -915,7 +899,7 @@ class QuantumFilters3D(QuantumFiltersBase):
             data_out = torch.zeros((data.shape[0], data.shape[1],fin_shape,fin_shape,fin_shape))
             for i in range(data.shape[1]): # Run for every feature
                 data_out[:,i,:,:,:] = self._run_filter(data_scaled[:,i,:,:,:],
-                                  tol, torch.tensor(self.U_list_filters[n_filt][i]).to(self.device))
+                                  tol, torch.tensor(self.unitaries_list[n_filt][i]).to(self.device))
         else:
             data_out = np.zeros((data.shape[0], data.shape[1],fin_shape,fin_shape,fin_shape))
             for i in range(data.shape[0]):    
