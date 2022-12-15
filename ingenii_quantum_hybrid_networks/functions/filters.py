@@ -396,7 +396,7 @@ class QuantumFiltersBase():
 
         return new_counts
 
-    def _run_filterQiskit(self, data, gates_set, qubits_set, tol=1e-6):
+    def _run_filter_qiskit(self, data, gates_set, qubits_set, tol=1e-6):
         '''
         Runs the quantum circuit for one feature of the data.  This function is only used with Qiskit backends.
             data (np.array): shape (N,N), channel of the image 
@@ -407,16 +407,15 @@ class QuantumFiltersBase():
 
         size = self.shape[0]
 
-        if self.n_dimensions == 2:
-            transpose_idxs = [0, 2, 1, 3]
-            dz = None
-        elif self.n_dimensions == 3:
-            transpose_idxs = [0, 3, 1, 4, 2, 5]
-            dz = size*self.stride
+        transpose_idxs = {
+            2: [0, 2, 1, 3],
+            3: [0, 3, 1, 4, 2, 5]
+        }
         
         # Get boxes from data
         strided_window, shape = roll_numpy(
-            data, np.zeros(self.shape), dx=size*self.stride, dy=size*self.stride, dz=dz
+            data, np.zeros(self.shape),
+            dx=size*self.stride, dy=size*self.stride, dz=size*self.stride if self.n_dimensions == 3 else None
         )
         self.shape_windows = shape    
         windows = strided_window.reshape((-1,) + (size,) * self.n_dimensions)
@@ -438,19 +437,21 @@ class QuantumFiltersBase():
 
         # Reshape the results in the original shape
         results = np.array(results).reshape(self.shape_windows) # Reshape results to rolling windows shape
-        results = results.transpose(transpose_idxs).reshape(fin_shape_parameters) # Transpose to obtain original shape
+        results = results.transpose(transpose_idxs[self.n_dimensions]) \
+            .reshape(fin_shape_parameters) # Transpose to obtain original shape
         
         # Apply zero-mask
         mask = np.ones(self.shape_windows) 
         windows_reshape = windows.reshape(self.shape_windows) # Reshape to rolling windows shape
         mask[np.abs(windows_reshape) < tol] = 0 # Find zero-valued values of the original data
-        mask = mask.reshape(self.shape_windows).transpose(transpose_idxs).reshape(fin_shape_parameters) # Transpose to return to original shape
+        mask = mask.reshape(self.shape_windows).transpose(transpose_idxs[self.n_dimensions]) \
+            .reshape(fin_shape_parameters) # Transpose to return to original shape
         results = results.astype('float64')
         results*=mask # Apply mask
         
         return results
 
-    def _run_filter(self, data,tol, U):
+    def _run_filter_torch(self, data,tol, U):
         """
             Runs a quantum filter to a feature from the data samples.  This function is only used with Pytorch backend.
                 data (tensor): input data (one feature), shape (num_samples, N,N,N)
@@ -487,7 +488,7 @@ class QuantumFiltersBase():
 
         frqi = (
             torch.kron(torch.cos(windows), v1) + torch.kron(torch.sin(windows), v2)
-        )/torch.sqrt(sq)
+        ) / torch.sqrt(sq)
 
         # 2. Flatten the last dimension to create an initial state
         flatten = frqi.reshape(-1,2**(self.nqbits)).type(torch.complex128)
@@ -533,16 +534,16 @@ class QuantumFiltersBase():
 
         data_out = np.zeros((data.shape[0], data.shape[1],) + (fin_shape,) * self.n_dimensions)
 
-        if self.backend=='torch':
+        if self.backend == 'torch':
             for i in range(data.shape[1]): # Run for every feature
                 unitary_matrix = torch.tensor(self.unitaries_list[n_filt][i]).to(self.device)
 
                 if self.n_dimensions == 2:
-                    data_out[:,i,:,:] = self._run_filter(
+                    data_out[:,i,:,:] = self._run_filter_torch(
                         data_scaled[:,i,:,:], tol, unitary_matrix
                     )
                 elif self.n_dimensions == 3:
-                    data_out[:,i,:,:,:] = self._run_filter(
+                    data_out[:,i,:,:,:] = self._run_filter_torch(
                         data_scaled[:,i,:,:,:], tol, unitary_matrix
                     )
         else:
@@ -552,11 +553,11 @@ class QuantumFiltersBase():
                     qubits_set = self.qubits_set_list[n_filt][j]
 
                     if self.n_dimensions == 2:
-                        data_out[i,j,:,:] = self._run_filterQiskit(
+                        data_out[i,j,:,:] = self._run_filter_qiskit(
                             data[i,j,:,:], gates_set, qubits_set, tol
                         )
                     elif self.n_dimensions == 3:
-                        data_out[i,j,:,:,:] = self._run_filterQiskit(
+                        data_out[i,j,:,:,:] = self._run_filter_qiskit(
                             data[i,j,:,:,:], gates_set, qubits_set, tol
                         )
             
