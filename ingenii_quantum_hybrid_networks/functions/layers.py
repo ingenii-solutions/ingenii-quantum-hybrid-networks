@@ -656,24 +656,24 @@ class QuantumFCLayer:
             raise NotImplementedError('Data encoding method not implemented')
 
         # Ansatz
-        if self.ansatz=='circuit_10':
-            qc_ansatz, params_circuit = self._circuit_10(self.nqbits, self.n_layers)
-        elif self.ansatz=='circuit_6':
-            qc_ansatz, params_circuit = self._circuit_6(self.nqbits, self.n_layers)
-        elif self.ansatz=='circuit_9':
-            qc_ansatz, params_circuit = self._circuit_9(self.nqbits, self.n_layers)
-        elif self.ansatz=='circuit_15':
-            qc_ansatz, params_circuit = self._circuit_15(self.nqbits, self.n_layers)
-        elif self.ansatz=='circuit_14':
-            qc_ansatz, params_circuit = self._circuit_14(self.nqbits, self.n_layers)
-        elif self.ansatz=='circuit_13':
-            qc_ansatz, params_circuit = self._circuit_13(self.nqbits, self.n_layers)
-        else:
-            raise NotImplementedError('Quantum Circuit model not implemented')
+        name_to_func = {
+            "circuit_10": self._circuit_10,
+            "circuit_6": self._circuit_6,
+            "circuit_9": self._circuit_9,
+            "circuit_15": self._circuit_15,
+            "circuit_14": self._circuit_14,
+            "circuit_13": self._circuit_13,
+        }
+        if self.ansatz not in name_to_func:
+            raise NotImplementedError(
+                f"Quantum Circuit model '{self.ansatz}' not implemented. Implemented models: " + 
+                ", ".join(list(name_to_func.keys()))
+            )
 
+        qc_ansatz, params_circuit = name_to_func[self.ansatz](self.nqbits, self.n_layers)
         
         # Define quantum instances (statevector and sample based)
-        if type(self.backend)==str:
+        if type(self.backend) == str:
             qi = QuantumInstance(Aer.get_backend(self.backend))
         else:
             qi = QuantumInstance(self.backend)
@@ -683,18 +683,19 @@ class QuantumFCLayer:
         qc_state = StateFn(qc_input.compose(qc_ansatz))
         
         # Convert to QNN class
-        # Case 1: Measuring observables
-        if self.obs_name!="":
+        if self.obs_name != "": # Case 1: Measuring observables
             # 3. Define the observable to measure
             observable = [PauliSumOp.from_list([(obs_name, 1)]) for obs_name in self.obs_name]
             # Define operators
             operators = ListOp([~StateFn(obs) @ qc_state for obs in observable])
             # REMEMBER TO SET input_gradients=True FOR ENABLING HYBRID GRADIENT BACKPROP
-            qnn =  OpflowQNN(operators, params_input, params_circuit, expval, gradient, qi,input_gradients=True)  
-        # Case 2: Measuring probabilities
-        else:
-            qnn = CircuitQNN(qc_input.compose(qc_ansatz), params_input, params_circuit,sparse=False,quantum_instance=qi)
-        return qnn
+            return OpflowQNN(
+                operators, params_input, params_circuit, expval, gradient, qi, input_gradients=True
+            )
+        else: # Case 2: Measuring probabilities
+            return CircuitQNN(
+                qc_input.compose(qc_ansatz), params_input, params_circuit, sparse=False, quantum_instance=qi
+            )
     
     def create_layer(self):
         """
@@ -704,5 +705,4 @@ class QuantumFCLayer:
         """
         qnn = self.create_qnn()
         initial_weights = 0.1 * (2 * algorithm_globals.random.random(qnn.num_weights) - 1)
-        qnn_layer = TorchConnector(qnn, initial_weights)
-        return qnn_layer
+        return TorchConnector(qnn, initial_weights)
