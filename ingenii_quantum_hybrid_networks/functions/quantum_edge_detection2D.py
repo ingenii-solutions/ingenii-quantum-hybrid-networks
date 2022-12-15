@@ -1,17 +1,10 @@
-import random
 import numpy as np
 import torch
-import torch.nn as nn
 import math
 
-import collections
-import qiskit 
-from qiskit import QuantumCircuit, Aer, IBMQ, QuantumRegister, ClassicalRegister
-from qiskit import BasicAer
+from qiskit import QuantumCircuit, Aer
 from qiskit import transpile, assemble
-from qiskit.quantum_info import Statevector
 import itertools
-from qiskit.quantum_info import Pauli
 from qiskit.opflow import *
 from tqdm import tqdm
 import time
@@ -42,9 +35,9 @@ class EdgeDetector2D():
         "shots": "(int) Number of shots for the experiments, only for qiskit backend",
     }
     example_parameters = {
-        "size": "16",
+        "size": 16,
         "backend": "torch",
-        "shots": "512"
+        "shots": 512
     }
     
     def __init__(self, size, backend='aer_simulator', shots=1000):  
@@ -73,9 +66,18 @@ class EdgeDetector2D():
                 self.device = torch.device("cpu")
             # 2. Quantum operations: Hadamard and rolling Identity
             H = 1/math.sqrt(2)*torch.tensor([[1,1],[1,-1]], dtype=torch.float32).to(self.device)
-            self.H_large = torch.kron(torch.eye(2**self.data_qb), H).reshape(1,2**self.total_qb, 2**self.total_qb).to(self.device)
+            self.H_large = torch.kron(
+                torch.eye(2**self.data_qb), H
+            ).reshape(
+                1, 2**self.total_qb, 2**self.total_qb
+            ).to(self.device)
+            
             # Initialize the amplitude permutation unitary
-            self.D2n = torch.roll(torch.eye(2**self.total_qb, dtype=torch.float32), 1, 1).reshape(1,2**self.total_qb,2**self.total_qb).to(self.device)
+            self.D2n = torch.roll(
+                torch.eye(2**self.total_qb, dtype=torch.float32), 1, 1
+            ).reshape(
+                1, 2**self.total_qb, 2**self.total_qb
+            ).to(self.device)
         
         # Running in a Qiskit environment
         else:  
@@ -105,15 +107,17 @@ class EdgeDetector2D():
         qc.h(0)
         qc.unitary(self.D2n, range(self.total_qb))
         qc.h(0)
+
         # Measure
         qc.measure_all()
+
         # Run quantum circuit
         if self.backend=='aer_simulator':
-            back = Aer.get_backend(self.backend)
-            t_qc = transpile(qc, back)
+            aer_sim = Aer.get_backend(self.backend)
+            t_qc = transpile(qc, aer_sim)
             qobj = assemble(t_qc, shots=self.shots)
-            result = back.run(qobj).result()
-        else:
+            result = aer_sim.run(qobj).result()
+        else: # For real hardware/fake simulators
             coupling_map = self.backend.configuration().coupling_map
             optimized_3 = transpile(qc, backend=self.backend, seed_transpiler=11)
             result = self.backend.run(optimized_3, shots=self.shots).result()
@@ -122,18 +126,20 @@ class EdgeDetector2D():
         # Get statevector from counts
         # Calculate binary string of basis qubits
         qbit_list = list(itertools.product([0, 1], repeat=self.total_qb))
-        new_counts = []
-        for l in range(len(qbit_list)): # Let's calculate the ordered statevector
-            q_str =''.join([str(value) for value in qbit_list[l]]) # Generate sting link '000', '001', ...
-            new_counts.append(counts.get(q_str, 0)) # Get the counts from that string
-
+        new_counts = [ # Let's calculate the ordered statevector
+            counts.get(
+            ''.join(map(str, qbit_list[l])), # Generate sting link '000', '001', ...
+            0 )
+            for l in range(len(qbit_list))
+        ]
         statevector = np.array(new_counts)/np.sum(new_counts)
-        # Gett odd values from state
-        final_state = statevector[range(1,2**(self.data_qb+1),2)]
+
+        # Get odd values from state
+        final_state = statevector[range(1, 2**(self.data_qb+1), 2)]
         
         # Select values larger than threshold
         edge_scan = np.zeros(final_state.shape)
-        edge_scan[np.abs(final_state)>tol]=1
+        edge_scan[np.abs(final_state) > tol]=1
         
         # Revert to box shape
         result = edge_scan[:self.size**2].reshape(self.shape)
