@@ -1,27 +1,13 @@
-import random
 import numpy as np
-import collections
 
-
-import qiskit 
-from qiskit import QuantumCircuit, Aer, IBMQ, QuantumRegister, ClassicalRegister
-from qiskit.utils import QuantumInstance, algorithm_globals
-from qiskit import BasicAer
-from qiskit import transpile, assemble
+from qiskit import QuantumCircuit, Aer
 from qiskit.circuit import Parameter
-from qiskit.quantum_info import Statevector
+from qiskit.circuit.library import ZZFeatureMap
 from qiskit_machine_learning.circuit.library import RawFeatureVector
-from qiskit_machine_learning.runtime import TorchRuntimeClient, TorchRuntimeResult,HookBase
-from qiskit.circuit.library import RealAmplitudes, ZZFeatureMap, StatePreparation
-from qiskit.opflow import StateFn, PauliSumOp, AerPauliExpectation, ListOp, Gradient
-from qiskit_machine_learning.neural_networks import OpflowQNN, TwoLayerQNN, CircuitQNN
 from qiskit_machine_learning.connectors import TorchConnector
-
-import itertools
-from qiskit.quantum_info import Pauli
-from qiskit.opflow import *
-import pickle
-import time
+from qiskit_machine_learning.neural_networks import OpflowQNN, CircuitQNN
+from qiskit.opflow import StateFn, PauliSumOp, AerPauliExpectation, ListOp, Gradient
+from qiskit.utils import QuantumInstance, algorithm_globals
 
 algorithm_globals.random_seed = 42
 
@@ -45,27 +31,30 @@ class QuantumFCLayer:
         "backend": "Qiskit backent to run the neural network"
     }
     example_parameters = {
-        "input_size":"4",
-        "n_layers":"2",
+        "input_size": 4,
+        "n_layers": 2,
         "encoding": "qubit",
-        "ansatz":"1",
-        "obs_name":"['ZIII', 'IZII','IIZI', 'IIIZ']",
+        "ansatz": 1,
+        "obs_name": ['ZIII', 'IZII','IIZI', 'IIIZ'] ,
         "backend": "aer_simulator"
     }
     def __init__(self, input_size, n_layers=2, encoding='qubit', ansatz=1,
-                 obs_name = None, backend = "aer_simulator_statevector"):
+                 obs_name=None, backend="aer_simulator_statevector"):
         self.input_size = input_size
         self.n_layers = n_layers
         self.encoding = encoding
-        # Calcula the number of qubits needed for the data encoding
+
+        # Calculate the number of qubits needed for the data encoding
         if self.encoding=='amplitude':
             self.nqbits = int(np.ceil(np.log2(self.input_size)))
         else:
             self.nqbits = self.input_size 
+
         ansatz_names = ["circuit_10", "circuit_9", "circuit_15", "circuit_14", "circuit_13","circuit_6"]
         if type(ansatz)!=int or ansatz<1 or ansatz>6:
             raise NotImplementedError('Choose a quantum ansatz between 1 and 6')
         self.ansatz = ansatz_names[ansatz-1]
+
         if obs_name==None: # Default observables name
             obs_name = "Z"*self.nqbits
         self.obs_name = obs_name
@@ -84,9 +73,12 @@ class QuantumFCLayer:
         """
         qc_input = QuantumCircuit(nqbits)
         # 1. Ry gates Initialization
-        thetas_ry_input = [qiskit.circuit.Parameter('thetas_input_' + str(i)) for i in range(nqbits)]#qiskit.circuit.ParameterVector('thetas_ry1', nqbits)  
-        for i in range(nqbits):
-            qc_input.ry(thetas_ry_input[i], i)
+        thetas_ry_input = [
+            Parameter(f'thetas_input_{str(i)}')
+            for i in range(nqbits)
+        ] # qiskit.circuit.ParameterVector('thetas_ry1', nqbits)
+        for i, theta_ry_input in enumerate(thetas_ry_input):
+            qc_input.ry(theta_ry_input, i)
 
         return qc_input,thetas_ry_input
 
@@ -130,18 +122,26 @@ class QuantumFCLayer:
         qc_ansatz = QuantumCircuit(nqbits)    
         # Choose the number of layers of the PQC
         thetas_ry_weight = []
-        qbit_list = [(nqbits-1, nqbits-2), (nqbits-1,0)] + [(i,i+1) for i in range(0, nqbits-2)]
+        qbit_list = [
+            (nqbits-1, nqbits-2), (nqbits-1,0)
+        ] + [
+            (i,i+1) for i in range(0, nqbits-2)
+        ]
         for layer in range(n_layers):
+
             # 2. Phase shifts
             for (qbit1, qbit2) in qbit_list:
                 qc_ansatz.cz(qbit1, qbit2)
             qc_ansatz.barrier()
 
             # 3. Ry gates
-            thetas_new = [qiskit.circuit.Parameter('thetas_ry' + str(layer+1)+'_'+str(i))  for i in range(nqbits)]
+            thetas_new = [
+                Parameter(f'thetas_ry{str(layer+1)}_{str(i)}')
+                for i in range(nqbits)
+            ]
             thetas_ry_weight += thetas_new
-            for i in range(nqbits):
-                qc_ansatz.ry(thetas_new[i], i)
+            for i, theta_new in enumerate(thetas_new):
+                qc_ansatz.ry(theta_new, i)
 
         return qc_ansatz, thetas_ry_weight
 
@@ -154,37 +154,50 @@ class QuantumFCLayer:
             (QuantumCircuit): output quantum circuit
             (list of Parameters): Parameters of the circuit
         """
+        qc_ansatz = QuantumCircuit(nqbits)  
         thetas_rx_list = []
         thetas_rz_list = []
         thetas_crx_list = []
         for layer in range(n_layers):    
-            thetas_rx = [Parameter('thetas_rx' +str(layer+1)+ '_'+str(i))  for i in range(2*nqbits)]
-            thetas_rz = [Parameter('thetas_rz' + str(layer+1)+'_'+str(i))  for i in range(2*nqbits)]
-            thetas_crx = [Parameter('thetas_crx' +str(layer+1)+ '_'+str(i))  for i in range((nqbits-1)*nqbits)]
-            thetas_rx_list+=thetas_rx
-            thetas_rz_list+=thetas_rz
-            thetas_crx_list+=thetas_crx
+            thetas_rx = [
+                Parameter(f'thetas_rx{str(layer+1)}_{str(i)}')
+                for i in range(2*nqbits)
+            ]
+            thetas_rz = [
+                Parameter(f'thetas_rz{str(layer+1)}_{str(i)}')
+                for i in range(2*nqbits)
+            ]
+            thetas_crx = [
+                Parameter(f'thetas_crx{str(layer+1)}_{str(i)}')
+                for i in range((nqbits-1)*nqbits)
+            ]
+            thetas_rx_list += thetas_rx
+            thetas_rz_list += thetas_rz
+            thetas_crx_list += thetas_crx
 
             # First Rx layer
-            for i in range(nqbits):
-                qc_ansatz.rx(thetas_rx[i],i)
+            for i, theta_rx in enumerate(thetas_rx[:nqbits]):
+                qc_ansatz.rx(theta_rx, i)
             # First Ry layer
-            for i in range(nqbits):
-                qc_ansatz.rz(thetas_rz[i],i)
+            for i, theta_rz in enumerate(thetas_rz[:nqbits]):
+                qc_ansatz.rz(theta_rz, i)
+
             # Controlled Rx
             l=0
-            for i in range(nqbits-1,-1,-1): # i= controlled qubits
-                qubits = list(range(nqbits-1,-1,-1))
-                qubits.remove(i)
-                for q in qubits:
-                    qc_ansatz.crx(thetas_crx[l], i,q)
+            for i in range(nqbits-1, -1, -1): # i= controlled qubits
+                for q in range(nqbits-1, -1, -1):
+                    if i == q: # Can't link to itself
+                        continue
+                    qc_ansatz.crx(thetas_crx[l], i, q)
                     l+=1
+
             # Second Rx layer
-            for i in range(nqbits):
-                qc_ansatz.rx(thetas_rx[i+nqbits],i)
+            for i, theta_rx in enumerate(thetas_rx[nqbits:]):
+                qc_ansatz.rx(theta_rx, i)
             # Second Ry layer
-            for i in range(nqbits):
-                qc_ansatz.rz(thetas_rz[i+nqbits],i)
+            for i, theta_rz in enumerate(thetas_rz[:nqbits]):
+                qc_ansatz.rz(theta_rz, i)
+
             qc_ansatz.barrier()       
         return qc_ansatz, thetas_rx_list + thetas_rz_list + thetas_crx_list
     
@@ -200,19 +213,26 @@ class QuantumFCLayer:
         qc_ansatz = QuantumCircuit(nqbits)
         thetas_rx_weight = []
         qbit_list = [(i,i-1) for i in range(nqbits-1,0,-1)]
+
         for layer in range(n_layers):
+
             # 1. Hadamard
             for q in range(nqbits):
                 qc_ansatz.h(q)
+
             # 2. Phase shifts
             for (qbit1, qbit2) in qbit_list:
                 qc_ansatz.cz(qbit1, qbit2)
 
             # 3. Ry gates
-            thetas_new = [qiskit.circuit.Parameter('thetas_rx' + str(layer+1)+'_'+str(i))  for i in range(nqbits)]
+            thetas_new = [
+                Parameter(f'thetas_rx{str(layer+1)}_{str(i)}')
+                for i in range(nqbits)
+            ]
             thetas_rx_weight += thetas_new
-            for i in range(nqbits):
-                qc_ansatz.rx(thetas_new[i], i)
+            for i, theta_new in enumerate(thetas_new):
+                qc_ansatz.rx(theta_new, i)
+
             qc_ansatz.barrier()
         return qc_ansatz, thetas_rx_weight
     
@@ -229,23 +249,35 @@ class QuantumFCLayer:
         thetas_ry_list = []
         qbit_list = [(0, nqbits-1)] + [(i,i-1) for i in range(nqbits-1,0,-1)]
         qbit_list2 = [(nqbits-2, nqbits-1), (nqbits-1,0)] + [(i,i+1) for i in range(0, nqbits-2)]
+
         for layer in range(n_layers):
+
             # 1. Ry gates
-            thetas_new = [qiskit.circuit.Parameter('thetas_ry_1_' + str(layer+1)+'_'+str(i))  for i in range(nqbits)]
+            thetas_new = [
+                Parameter(f'thetas_ry_1_{str(layer+1)}_{str(i)}')
+                for i in range(nqbits)
+            ]
             thetas_ry_list += thetas_new
-            for q in range(nqbits):
-                qc_ansatz.ry(thetas_new[q], q)
+            for q, theta_new in enumerate(thetas_new):
+                qc_ansatz.ry(theta_new, q)
+
             # 2. CNOTS
             for (qbit1, qbit2) in qbit_list:
                 qc_ansatz.cx(qbit2, qbit1)
+
             # 3. Ry gates
-            thetas_new = [qiskit.circuit.Parameter('thetas_ry_2_' + str(layer+1)+'_'+str(i))  for i in range(nqbits)]
+            thetas_new = [
+                Parameter(f'thetas_ry_2_{str(layer+1)}_{str(i)}')
+                for i in range(nqbits)
+            ]
             thetas_ry_list += thetas_new
-            for i in range(nqbits):
-                qc_ansatz.ry(thetas_new[i], i)
+            for i, theta_new in enumerate(thetas_new):
+                qc_ansatz.ry(theta_new, i)
+
             # 4. CNOTS
             for (qbit1, qbit2) in qbit_list2:
                 qc_ansatz.cx(qbit2, qbit1)
+
             qc_ansatz.barrier()
             
         return qc_ansatz, thetas_ry_list
@@ -264,31 +296,46 @@ class QuantumFCLayer:
         thetas_crx_list = []
         qbit_list = [(0, nqbits-1)] + [(i,i-1) for i in range(nqbits-1,0,-1)]
         qbit_list2 = [(nqbits-2, nqbits-1), (nqbits-1,0)] + [(i,i+1) for i in range(0, nqbits-2)]
+
         for layer in range(n_layers):
+
             # 1. Ry gates
-            thetas_new = [qiskit.circuit.Parameter('thetas_ry_1_' + str(layer+1)+'_'+str(i))  for i in range(nqbits)]
+            thetas_new = [
+                Parameter(f'thetas_ry_1_{str(layer+1)}_{str(i)}')
+                for i in range(nqbits)
+            ]
             thetas_ry_list += thetas_new
+
             for q in range(nqbits):
                 qc_ansatz.ry(thetas_new[q], q)
+
             # 2. Controlled Rx
-            thetas_new = [qiskit.circuit.Parameter('thetas_crx_1_' + str(layer+1)+'_'+str(i))  for i in range(nqbits)]
-            thetas_crx_list+=thetas_new
-            i=0
-            for (qbit1, qbit2) in qbit_list:
-                qc_ansatz.crx(thetas_new[i],qbit2, qbit1)
-                i+=1
+            thetas_new = [
+                Parameter(f'thetas_crx_1_{str(layer+1)}_{str(i)}')
+                for i in range(nqbits)
+            ]
+            thetas_crx_list += thetas_new
+            for theta_new, (qbit1, qbit2) in zip(thetas_new, qbit_list):
+                qc_ansatz.crx(theta_new, qbit2, qbit1)
+
             # 3. Ry gates
-            thetas_new = [qiskit.circuit.Parameter('thetas_ry_2_' + str(layer+1)+'_'+str(i))  for i in range(nqbits)]
+            thetas_new = [
+                Parameter(f'thetas_ry_2_{str(layer+1)}_{str(i)}')
+                for i in range(nqbits)
+            ]
             thetas_ry_list += thetas_new
-            for i in range(nqbits):
-                qc_ansatz.ry(thetas_new[i], i)
+            for i, theta_new in enumerate(thetas_new):
+                qc_ansatz.ry(theta_new, i)
+
             # 4. Controlled Rx
-            thetas_new = [qiskit.circuit.Parameter('thetas_crx_2_' + str(layer+1)+'_'+str(i))  for i in range(nqbits)]
-            thetas_crx_list+=thetas_new
-            i=0
-            for (qbit1, qbit2) in qbit_list2:
-                qc_ansatz.crx(thetas_new[i],qbit2, qbit1)
-                i+=1
+            thetas_new = [
+                Parameter(f'thetas_crx_2_{str(layer+1)}_{str(i)}')
+                for i in range(nqbits)
+            ]
+            thetas_crx_list += thetas_new
+            for theta_new, (qbit1, qbit2) in zip(thetas_new, qbit_list2):
+                qc_ansatz.crx(theta_new, qbit2, qbit1)
+
             qc_ansatz.barrier()
         return qc_ansatz, thetas_ry_list + thetas_crx_list
 
@@ -306,31 +353,44 @@ class QuantumFCLayer:
         thetas_crz_list = []
         qbit_list = [(0, nqbits-1)] + [(i,i-1) for i in range(nqbits-1,0,-1)]
         qbit_list2 = [(nqbits-2, nqbits-1), (nqbits-1,0)] + [(i,i+1) for i in range(0, nqbits-2)]
+
         for layer in range(n_layers):
             # 1. Ry gates
-            thetas_new = [qiskit.circuit.Parameter('thetas_ry_1_' + str(layer+1)+'_'+str(i))  for i in range(nqbits)]
+            thetas_new = [
+                Parameter(f'thetas_ry_1_{str(layer+1)}_{str(i)}')
+                for i in range(nqbits)
+            ]
             thetas_ry_list += thetas_new
             for q in range(nqbits):
                 qc_ansatz.ry(thetas_new[q], q)
+
             # 2. Controlled Rx
-            thetas_new = [qiskit.circuit.Parameter('thetas_crx_1_' + str(layer+1)+'_'+str(i))  for i in range(nqbits)]
-            thetas_crz_list+=thetas_new
-            i=0
-            for (qbit1, qbit2) in qbit_list:
-                qc_ansatz.crz(thetas_new[i],qbit2, qbit1)
-                i+=1
+            thetas_new = [
+                Parameter(f'thetas_crx_1_{str(layer+1)}_{str(i)}')
+                for i in range(nqbits)
+            ]
+            thetas_crz_list += thetas_new
+            for theta_new, (qbit1, qbit2) in zip(thetas_new, qbit_list):
+                qc_ansatz.crz(theta_new, qbit2, qbit1)
+
             # 3. Ry gates
-            thetas_new = [qiskit.circuit.Parameter('thetas_ry_2_' + str(layer+1)+'_'+str(i))  for i in range(nqbits)]
+            thetas_new = [
+                Parameter(f'thetas_ry_2_{str(layer+1)}_{str(i)}')
+                for i in range(nqbits)
+            ]
             thetas_ry_list += thetas_new
-            for i in range(nqbits):
-                qc_ansatz.ry(thetas_new[i], i)
+            for i, theta_new in enumerate(thetas_new):
+                qc_ansatz.ry(theta_new, i)
+
             # 4. Controlled Rx
-            thetas_new = [qiskit.circuit.Parameter('thetas_crx_2_' + str(layer+1)+'_'+str(i))  for i in range(nqbits)]
+            thetas_new = [
+                Parameter(f'thetas_crx_2_{str(layer+1)}_{str(i)}')
+                for i in range(nqbits)
+            ]
             thetas_crz_list+=thetas_new
-            i=0
-            for (qbit1, qbit2) in qbit_list2:
-                qc_ansatz.crz(thetas_new[i],qbit2, qbit1)
-                i+=1
+            for theta_new, (qbit1, qbit2) in zip(thetas_new, qbit_list2):
+                qc_ansatz.crz(theta_new, qbit2, qbit1)
+
             qc_ansatz.barrier()
         return qc_ansatz, thetas_ry_list + thetas_crz_list
     
