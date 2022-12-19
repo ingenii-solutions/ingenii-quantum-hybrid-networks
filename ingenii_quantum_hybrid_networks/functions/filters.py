@@ -532,9 +532,9 @@ class QuantumFiltersBase():
         self.num_samples = data.shape[0] # Store number of samples
         fin_shape = int(data.shape[-1]/self.stride) # Final shape of the data
 
-        data_out = np.zeros((data.shape[0], data.shape[1],) + (fin_shape,) * self.n_dimensions)
-
         if self.backend == 'torch':
+            data_out = torch.zeros((data.shape[0], data.shape[1],) + (fin_shape,) * self.n_dimensions)
+
             for i in range(data.shape[1]): # Run for every feature
                 unitary_matrix = torch.tensor(self.unitaries_list[n_filt][i]).to(self.device)
 
@@ -547,6 +547,8 @@ class QuantumFiltersBase():
                         data_scaled[:,i,:,:,:], tol, unitary_matrix
                     )
         else:
+            data_out = np.zeros((data.shape[0], data.shape[1],) + (fin_shape,) * self.n_dimensions)
+
             for i in range(data.shape[0]):    
                 for j in range(data.shape[1]):
                     gates_set = self.gates_set_list[n_filt][j]
@@ -599,7 +601,7 @@ class QuantumFilters2D(QuantumFiltersBase):
 
         super().__init__(n_dimensions=2, shape=shape, stride=stride, shots=shots, backend=backend)
 
-    def get_quantum_filters(self, data,tol=1e-6):   
+    def get_quantum_filters(self, data, tol=1e-6):   
         """
         Runs the quantum filters for all features multiple times (num_filters times)
             data (tensor): input data (one feature), shape (num_samples, num_features,N,N,N)
