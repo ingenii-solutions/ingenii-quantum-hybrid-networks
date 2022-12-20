@@ -690,16 +690,16 @@ class QuantumFilters3D(QuantumFiltersBase):
         returns:
             (tensor/np.array): output quantum filters
         """
-        if len(data.shape)!=5:
+        if len(data.shape) != 5:
             raise ValueError('Incorrect data shape. The data should have shape (num_samples, num_features, N,N,N)')
         all_results = [
             self._run(data, tol, n_filt=i)
             for i in range(self.num_filters) # Run for each number of filters
         ]
+        result_shape = all_results[0].shape
                 
         # Reshape final array
         if self.backend=='torch':
-            result_shape = all_results[0].shape
             results_reshape = torch.zeros([
                 result_shape[0],
                 result_shape[1]*self.num_filters,
@@ -719,10 +719,10 @@ class QuantumFilters3D(QuantumFiltersBase):
         else:
             all_results = np.array(all_results)
             results_reshape = all_results.reshape(
-                all_results.shape[1],
-                all_results.shape[2]*self.num_filters,
-                all_results.shape[3],
-                all_results.shape[3],
-                all_results.shape[3]
+                result_shape[0],
+                result_shape[1]*self.num_filters,
+                result_shape[2],
+                result_shape[3],
+                result_shape[4]
             )      
         return results_reshape

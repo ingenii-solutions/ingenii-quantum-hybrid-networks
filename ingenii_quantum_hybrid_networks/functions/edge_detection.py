@@ -178,7 +178,7 @@ class EdgeDetectorBase():
 
     def run_image_torch(self, data, tol=1e-3, reduce=True, verbose=False):
         '''
-        Run edge detection for the whole images (Pytorch version=
+        Run edge detection for the whole images (Pytorch)
             data (tensor): input data
             tol (tensor): Tolerance to be considered and edge
             reduce (bool): reduce the dimension by half at the end of the algorithm
@@ -187,29 +187,33 @@ class EdgeDetectorBase():
         if verbose:
             start_time = time()
 
+        if self.n_dimensions == 2:
+            axis = (1, 2)
+            reshape_idxs = (-1, 1, 1)
+            normalized_reshape_idxs = (-1, self.size**self.n_dimensions)
+            windows_reshape_idxs = (-1, self.size, self.size)
+        else:
+            axis = (2, 3, 4)
+            samples = data.shape[0]
+            reshape_idxs = (samples, -1, 1, 1, 1)
+            normalized_reshape_idxs = (samples, -1, self.size**self.n_dimensions)
+            windows_reshape_idxs = (samples, -1, self.size, self.size, self.size)
+
         # 1. Get view of image
         # We split it into bits of (4x4x4)
-        samples = data.shape[0]
         windows, shape_aux = roll_torch(
             data, torch.zeros((self.size,) * self.n_dimensions),
             dx=self.size, dy=self.size, dz=self.size if self.n_dimensions == 3 else None
         )
-        windows = windows.reshape((-1,) + (self.size,) * self.n_dimensions).to(self.device)
+        windows = windows.reshape(windows_reshape_idxs).to(self.device)
         
-        if self.n_dimensions == 2:
-            axis = (1, 2)
-            reshape_idxs = (-1, 1, 1)
-        else:
-            axis = (2, 3, 4)
-            reshape_idxs = (samples, -1, 1, 1, 1)
-
         # 2. Data encoding: amplitude encoding
         norm_const = windows.square().sum(axis=axis).sqrt().reshape(*reshape_idxs)
         norm_const[torch.abs(norm_const) < 1e-16] = 1
         normalized_image = windows/norm_const
         
         # 3. Flatten the last 2 dimesions to obtain an initial state
-        normalized_flatten = normalized_image.reshape(-1, self.size**self.n_dimensions)
+        normalized_flatten = normalized_image.reshape(normalized_reshape_idxs)
         
         # 4. Kronecker product to increase the last dimension 1 qubit
         normalized_larger = torch.kron(
