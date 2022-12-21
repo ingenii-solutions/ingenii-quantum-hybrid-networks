@@ -565,6 +565,48 @@ class QuantumFiltersBase():
             
         return data_out
 
+    def get_quantum_filters(self, data, tol=1e-6):   
+        """
+        Runs the quantum filters for all features multiple times (num_filters times)
+            data (tensor): input data (one feature), shape 2D (num_samples, num_features, N, N), 3D (num_samples, num_features, N, N, N)
+            tol (float): tolerance for the masking matrix. All values from the original data which are smaller than the tolerance are set to 0.
+        returns:
+            (tensor/np.array): output quantum filters
+        """
+        if len(data.shape) != self.n_dimensions + 2:
+            raise ValueError('Incorrect data shape. The data should have shape (num_samples, num_features,) + (N,) * number of dimensions')
+        all_results = [
+            self._run(data, tol, n_filt=i)
+            for i in range(self.num_filters) # Run for each number of filters
+        ]
+
+        result_shape = all_results[0].shape
+        final_result_shape = [
+            result_shape[0],
+            result_shape[1]*self.num_filters,
+        ] + [
+            result_shape[2 + i]
+            for i in range(self.n_dimensions)
+        ]
+
+        # Reshape final array
+        if self.backend == 'torch':
+            results_reshaped = torch.zeros(final_result_shape)
+            for i, result in enumerate(all_results):
+                results_reshaped[
+                    :,
+                    ((result_shape[1])*i):(result_shape[1])*(i + 1),
+                    :,
+                    :
+                ] = result
+    
+        else:
+            all_results = np.array(all_results)
+            results_reshaped = all_results.reshape(final_result_shape)
+
+        return results_reshaped
+
+
 class QuantumFilters2D(QuantumFiltersBase):
     
     description = "Applies a quantum filter to a 2D image.  Quantum data encoding: Flexible Representation of Quantum Images. Quantum transformation: quantum reservoirs with fixed number of gates. Implemented: G1 = {CNOT, H, X}, G2 = {CNOT, H, S}, and G3={CNOT,H,T} and evolution under the transverse field Ising model. The code is designed to run either in a Qiskit backend or with Pytorch."
@@ -600,50 +642,6 @@ class QuantumFilters2D(QuantumFiltersBase):
     def __init__(self, shape: tuple=(4,4), stride: float=1, shots: int=4096, backend: str='torch'):
 
         super().__init__(n_dimensions=2, shape=shape, stride=stride, shots=shots, backend=backend)
-
-    def get_quantum_filters(self, data, tol=1e-6):   
-        """
-        Runs the quantum filters for all features multiple times (num_filters times)
-            data (tensor): input data (one feature), shape (num_samples, num_features,N,N,N)
-            tol (float): tolerance for the masking matrix. All values from the original data which are smaller than the tolerance are set to 0.
-        returns:
-            (tensor/np.array): output quantum filters
-        """
-        if len(data.shape) != self.n_dimensions + 2:
-            raise ValueError('Incorrect data shape. The data should have shape (num_samples, num_features, N,N)')
-        all_results = [
-            self._run(data, tol, n_filt=i)
-            for i in range(self.num_filters) # Run for each number of filters
-        ]
-
-        result_shape = all_results[0].shape
-
-        # Reshape final array
-        if self.backend == 'torch':
-            results_reshape = torch.zeros([
-                result_shape[0],
-                result_shape[1]*self.num_filters,
-                result_shape[2],
-                result_shape[3]
-            ])
-            for i, result in enumerate(all_results):
-                results_reshape[
-                    :,
-                    ((result_shape[1])*i):(result_shape[1])*(i + 1),
-                    :,
-                    :
-                ] = result
-    
-        else:
-            all_results = np.array(all_results)
-            results_reshape = all_results.reshape(
-                result_shape[0],
-                result_shape[1]*self.num_filters,
-                result_shape[2],
-                result_shape[3]
-            )
-
-        return results_reshape
 
 
 class QuantumFilters3D(QuantumFiltersBase):
@@ -681,48 +679,3 @@ class QuantumFilters3D(QuantumFiltersBase):
     def __init__(self, shape: tuple=(4,4,4), stride: float=1, shots: int=4096, backend: str='torch'):
 
         super().__init__(n_dimensions=3, shape=shape, stride=stride, shots=shots, backend=backend)
-
-    def get_quantum_filters(self, data,tol=1e-6):   
-        """
-        Runs the quantum filters for all features multiple times (num_filters times)
-            data (tensor): input data (one feature), shape (num_samples, num_features,N,N,N)
-            tol (float): tolerance for the masking matrix. All values from the original data which are smaller than the tolerance are set to 0.
-        returns:
-            (tensor/np.array): output quantum filters
-        """
-        if len(data.shape) != 5:
-            raise ValueError('Incorrect data shape. The data should have shape (num_samples, num_features, N,N,N)')
-        all_results = [
-            self._run(data, tol, n_filt=i)
-            for i in range(self.num_filters) # Run for each number of filters
-        ]
-        result_shape = all_results[0].shape
-                
-        # Reshape final array
-        if self.backend=='torch':
-            results_reshape = torch.zeros([
-                result_shape[0],
-                result_shape[1]*self.num_filters,
-                result_shape[2],
-                result_shape[3],
-                result_shape[4]
-            ])
-            for i, result in enumerate(all_results):
-                results_reshape[
-                    :,
-                    ((result_shape[1])*i):(result_shape[1])*(i + 1),
-                    :,
-                    :,
-                    :
-                ] = result
-    
-        else:
-            all_results = np.array(all_results)
-            results_reshape = all_results.reshape(
-                result_shape[0],
-                result_shape[1]*self.num_filters,
-                result_shape[2],
-                result_shape[3],
-                result_shape[4]
-            )      
-        return results_reshape
