@@ -301,7 +301,7 @@ class EdgeDetector2D(EdgeDetectorBase):
             data (tensor/np.array): input data
             tol (tensor/np.array): Tolerance to be considered and edge
             reduce (bool): reduce the dimension by half at the end of the algorithm
-            verbose (int): If 1, tqdm is used to show the evolution.
+            verbose (bool): If true, tqdm is used to show the evolution.
         """
         if self.backend == 'torch':
             return self.run_image_torch(data, tol, reduce, verbose)

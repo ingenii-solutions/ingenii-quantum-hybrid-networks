@@ -89,7 +89,7 @@ def voxelize_3d(xyz, feat, vol_dim=[19,48,48,48], relative_size=True, size_angst
 
 # apply to individual volume (not a batch)
 class Voxelizer3D(nn.Module):
-	def __init__(self, feat_dim=19, vol_dim=48, ang_size=48, relative_size=True, atom_radius=1, use_cuda=True, verbose=0):
+	def __init__(self, feat_dim=19, vol_dim=48, ang_size=48, relative_size=True, atom_radius=1, use_cuda=True, verbose=False):
 		super(Voxelizer3D, self).__init__()
 		
 		self.feat_dim = feat_dim
