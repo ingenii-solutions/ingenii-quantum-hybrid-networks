@@ -262,7 +262,7 @@ class QuantumFCLayer:
         "n_layers":"int. Number of layers of the ansatz quantum circuit",
         "encoding": "str. Name of the data encoding method. Implemented: Qubit encoding, amplitude encoding and ZZFeatureMap.",
         "ansatz":"int. Number associated to the ansatz quantum circuit. Implemented:1-6 corresponding to circuit_10, circuit_9, circuit_15, circuit_14, circuit_13,circuit_6",
-        "obs_name":"str or list of str. Name of the observables measured at the end of the circuit. By default 'Z'*nqbits",
+        "observables":"str or list of str. Name of the observables measured at the end of the circuit. By default 'Z'*nqbits",
         "backend": "Qiskit backent to run the neural network"
                     }
     required_parameters = {
@@ -271,7 +271,7 @@ class QuantumFCLayer:
         "n_layers":"int. Number of layers of the ansatz quantum circuit",
         "encoding": "str. Name of the data encoding method. Implemented: Qubit encoding, amplitude encoding and ZZFeatureMap.",
         "ansatz":"int. Number associated to the ansatz quantum circuit. Implemented:1-6 corresponding to circuit_10, circuit_9, circuit_15, circuit_14, circuit_13,circuit_6",
-        "obs_name":"str or list of str. Name of the observables measured at the end of the circuit. By default 'Z'*nqbits. If obs_name='' then the probabilities are measured at the end of the circuit and the output has dimension equal to the number of qubits",
+        "observables":"str or list of str. Name of the observables measured at the end of the circuit. By default 'Z'*nqbits. If observables='' then the probabilities are measured at the end of the circuit and the output has dimension equal to the number of qubits",
         "backend": "Qiskit backent to run the neural network"
     }
     example_parameters = {
@@ -279,11 +279,11 @@ class QuantumFCLayer:
         "n_layers": 2,
         "encoding": "qubit",
         "ansatz": 1,
-        "obs_name": ['ZIII', 'IZII','IIZI', 'IIIZ'] ,
+        "observables": ['ZIII', 'IZII','IIZI', 'IIIZ'] ,
         "backend": "aer_simulator"
     }
     def __init__(self, input_size, n_layers=2, encoding='qubit', ansatz=1,
-                 obs_name=None, backend="aer_simulator_statevector"):
+                 observables=None, backend="aer_simulator_statevector"):
         self.input_size = input_size
         self.n_layers = n_layers
         self.encoding = encoding
@@ -299,9 +299,7 @@ class QuantumFCLayer:
             raise NotImplementedError('Choose a quantum ansatz between 1 and 6')
         self.ansatz = ansatz_names[ansatz-1]
 
-        if obs_name==None: # Default observables name
-            obs_name = "Z"*self.nqbits
-        self.obs_name = obs_name
+        self.observables = "Z"*self.nqbits if observables is None else observables
         self.backend = backend
     
     ################################################################################################################################################
@@ -683,9 +681,9 @@ class QuantumFCLayer:
         qc_state = StateFn(qc_input.compose(qc_ansatz))
         
         # Convert to QNN class
-        if self.obs_name != "": # Case 1: Measuring observables
+        if self.observables != "": # Case 1: Measuring observables
             # 3. Define the observable to measure
-            observable = [PauliSumOp.from_list([(obs_name, 1)]) for obs_name in self.obs_name]
+            observable = [PauliSumOp.from_list([(obs_name, 1)]) for obs_name in self.observables]
             # Define operators
             operators = ListOp([~StateFn(obs) @ qc_state for obs in observable])
             # REMEMBER TO SET input_gradients=True FOR ENABLING HYBRID GRADIENT BACKPROP
