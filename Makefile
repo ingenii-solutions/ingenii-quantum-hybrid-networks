@@ -30,6 +30,7 @@ lint-convert:
 	@flake8_junit flake8_report.txt flake8_report_junit.xml
 
 build:
+	@make lint
 	@if [ -d build ]; then rm -r build; fi
 	@if [ -d dist ]; then rm -r dist; fi
 	python setup.py sdist bdist_wheel
