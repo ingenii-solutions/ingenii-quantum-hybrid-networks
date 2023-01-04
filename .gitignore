@@ -134,3 +134,6 @@ scratch
 
 # Pickle
 *.pickle
+
+*.pt
+flake8_*
