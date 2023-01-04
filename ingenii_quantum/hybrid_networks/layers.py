@@ -25,7 +25,7 @@ class QuantumFunction2D(Function):
         "use_cuda": "Pytorch device (cpu, cuda) ",
         "tol": "tolerance for the masking matrix. All values from the "
         "original data which are smaller than the tolerance are set to 0.",
-            }
+    }
     required_parameters = {
         "data": "tensor (n_samples, num_features,N,N). Input data",
         "qc_class": "QuantumFilters2D object"
