@@ -1,5 +1,3 @@
-export
-
 setup:
 	@test -f .pypirc || cp .pypirc-dist .pypirc
 	pip install -e .
@@ -24,7 +22,7 @@ clean-setup:
 
 lint:
 	@make clean-lint
-	@flake8 --tee --output-file flake8_report.txt
+	@flake8 ingenii_quantum --tee --output-file flake8_report.txt
 
 lint-convert:
 	@flake8_junit flake8_report.txt flake8_report_junit.xml
