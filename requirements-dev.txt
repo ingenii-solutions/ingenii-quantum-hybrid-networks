@@ -3,4 +3,4 @@ pre-commit==1.21.0
 flake8==3.7.9
 flake8-junit-report==2.1.0
 twine==3.4.2
-wheel==0.36.2
+wheel==0.38.1
