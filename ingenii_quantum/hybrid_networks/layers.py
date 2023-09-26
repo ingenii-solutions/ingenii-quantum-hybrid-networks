@@ -10,16 +10,16 @@ class QuantumFCLayer:
         "input_size": "int. Dimension of the input",
         "n_layers": "int. Number of layers of the ansatz quantum circuit",
         "encoding": "str. Name of the data encoding method. Implemented: "
-        "Qubit encoding, amplitude encoding and ZZFeatureMap.",
+        "Qubit encoding, amplitude encoding, ZZFeatureMap and QAOA encoding.",
         "ansatz": "int. Number associated to the ansatz quantum circuit. "
         "Implemented: 1-6 corresponding to circuit_10, circuit_9, circuit_15, "
         "circuit_14, circuit_13, circuit_6",
         "observables": "str or list of str. Name of the observables measured "
         "at the end of the circuit. By default 'Z'*nqbits",
-        "backend": "Qiskit backent to run the neural network"
+        "backend": "Backent to run the neural network. By default we use the default.qubit backend from Pennylane."
     }
     required_parameters = {
-        "input_size": "int. Dimension of the input",
+        "input_size": "int. Dimension of the input data",
     }
     optional_parameters = {
         "n_layers": "int. Number of layers of the ansatz quantum circuit",
@@ -32,7 +32,7 @@ class QuantumFCLayer:
         "at the end of the circuit. By default 'Z'*nqbits. If observables='' "
         "then the probabilities are measured at the end of the circuit and "
         "the output has dimension equal to the number of qubits",
-        "backend": "Qiskit backent to run the neural network"
+        "backend": "Backent to run the neural network. By default we use the default.qubit backend from Pennylane."
     }
     example_parameters = {
         "input_size": 4,
@@ -40,7 +40,7 @@ class QuantumFCLayer:
         "encoding": "qubit",
         "ansatz": 1,
         "observables": ['ZIII', 'IZII', 'IIZI', 'IIIZ'],
-        "backend": "aer_simulator"
+        "backend": "default.qubit"
     }
 
     def __init__(self, input_size, n_layers=2, encoding='qubit', ansatz=1,
@@ -78,8 +78,8 @@ class QuantumFCLayer:
     def _qubit_encoding(self, nqbits, feature_vector):
         """
         Generates the circuit that performs qubit encoding.
-            feature_vector (array): input data
             nqbits (int): Number of qubits
+            feature_vector (array): input data
         """
         qml.AngleEmbedding(features=feature_vector, wires=range(nqbits), rotation='X')
 
@@ -87,8 +87,8 @@ class QuantumFCLayer:
     def _ZZFeatureMap_encoding(self, nqbits, feature_vector, n_layers=2):
         """
         Generates the circuit that performs ZZFeatureMap encoding.
-            feature_vector (array): Input data
             nqbits (int): Number of qubits
+            feature_vector (array): Input data
             n_layers (int): Number of layers
         """
         for _ in range(n_layers):
@@ -114,7 +114,7 @@ class QuantumFCLayer:
         """
         Generates the circuit that performs QAOA encoding. Notice that this encoding has trainable parameters
             feature_vector (array): Input data
-            weights (array): shape (L,1) for 1 qubit, (L,3) for two qubits and (L, 2*nqbits) otherwise
+            input_weights (array): shape (L,1) for 1 qubit, (L,3) for two qubits and (L, 2*nqbits) otherwise
         """
         qml.QAOAEmbedding(features=feature_vector, weights=input_weights, wires=range(len(feature_vector)))
 
@@ -262,6 +262,12 @@ class QuantumFCLayer:
                 qml.CRZ(weights[i,1 + layer -1], wires = [qbit2, qbit1])
 
     def apply_ansatz(self, weights_layer):
+        """
+        Applies the quantum ansatz to the quantum neural network.
+            weight_layers (array): Weights of the ansatz layer
+        returns:
+            (QuantumNN): quantum neural network
+        """
         # Ansatz
         name_to_func = {
             "circuit_10": self._circuit_10,
@@ -289,8 +295,10 @@ class QuantumFCLayer:
 
     def qnn_layer(self,inputs, weights_layers):
         """
-        Creates the quantum neural network composed of the quantum encoding,
-        que quantum ansatz and the measurements.
+        Creates the quantum neural network composed of the quantum encoding with qubit, amplitude or ZZ encoding, 
+        and a quantum ansatz.
+            inputs (array): Input data
+            weight_layers (array): Weights of the ansatz layer
         returns:
             (QuantumNN): quantum neural network
         """
@@ -308,8 +316,11 @@ class QuantumFCLayer:
 
     def qnn_layer_QAOA(self,inputs, weights_layers, weights_input):
         """
-        Creates the quantum neural network composed of the quantum encoding,
-        que quantum ansatz and the measurements.
+        Creates the quantum neural network composed of the quantum encoding with QAOA encoding, 
+        and a quantum ansatz.
+            inputs (array): Input data
+            weight_layers (array): Weights of the ansatz layer
+            weight_input (array): Weights of the QAOA quantum encoding
         returns:
             (QuantumNN): quantum neural network
         """
@@ -321,6 +332,7 @@ class QuantumFCLayer:
     def create_layer(self, type_layer='keras'):
         """
         Creates a Quantum fully connected layer and initializes it
+            type_layer (str): Type of quantum layer. It can either be 'keras' or 'torch'
         returns:
             Quantum layer
         """
@@ -346,23 +358,25 @@ class QuantumFCLayer:
                 self.weights_input_shape = (2,3)
             else:
                 self.weights_input_shape = (2,2*self.nqbits)
-            shapes = {"weights_input":self.weights_input_shape, "weights_layers": self.weights_shape}
-            self.qnode = qml.QNode(self.qnn_layer_QAOA, self.dev)
+            shapes = {"weights_input":self.weights_input_shape, "weights_layers": self.weights_shape} # Define shapes
+            self.qnode = qml.QNode(self.qnn_layer_QAOA, self.dev) # Create quantum node
         else:
-            shapes = {"weights_layers": self.weights_shape}#"weights_input":(), 
-            self.qnode = qml.QNode(self.qnn_layer, self.dev)
-        
+            shapes = {"weights_layers": self.weights_shape} # Define shapes
+            self.qnode = qml.QNode(self.qnn_layer, self.dev)# Create quantum node
+        # Create quantum layer
         if type_layer=='keras':
             if len(self.observables)==0:
                 output_dim = self.nqbits
             else:
                 output_dim = len(self.observables)
-            qlayer = qml.qnn.KerasLayer(self.qnode, shapes, output_dim=output_dim)
+            qlayer = qml.qnn.KerasLayer(self.qnode, shapes, output_dim=output_dim) # Create keras layer
         elif type_layer=='torch':
             if self.encoding=='QAOA': 
                 init_method = {"weights_layers": torch.nn.init.normal_, "weights_input": torch.nn.init.normal_}
             else:
                 init_method = {"weights_layers": torch.nn.init.normal_}
-            qlayer = qml.qnn.TorchLayer(self.qnode, shapes, init_method=init_method)
-
+            qlayer = qml.qnn.TorchLayer(self.qnode, shapes, init_method=init_method) # Create Torch layer
+        else:
+            raise NotImplementedError(
+                'type_layer should either be keras or torch.')
         return qlayer
