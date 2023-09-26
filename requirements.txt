@@ -12,3 +12,5 @@ torch==1.13.0
 torchaudio==0.13.0
 torchvision==0.14.0
 torch-geometric==2.1.0.post1
+pennylane==0.30.0
+tensorflow==2.12.0
