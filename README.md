@@ -1,6 +1,6 @@
 # Ingenii Quantum Hybrid Networks
 
-Version: 0.1.0
+Version: 0.1.1
 
 Package of tools to integrate hybrid quantum-classical neural networks to your machine learning algorithms.
 The algorithms provided in this package are implemented both in Qiskit (meant to run on real hardware and fake providers) and in Pytorch (meant to run in quantum simulation with CPUs or GPUs). This package contains the following quantum algorithms:
