@@ -1,29 +1,35 @@
 import collections
 import itertools
 
-from qiskit import QuantumCircuit, QuantumRegister, ClassicalRegister
-from qiskit.circuit import Parameter
-from qiskit import BasicAer, Aer, assemble, transpile
-from qiskit.quantum_info import Pauli
-from qiskit import opflow
+from qiskit import QuantumCircuit, QuantumRegister, ClassicalRegister, transpile
+from qiskit_aer import AerSimulator
+from qiskit.quantum_info import Pauli, random_unitary, Operator, SparsePauliOp
+from qiskit.circuit.library import PauliEvolutionGate
+from qiskit_ibm_runtime import Session, EstimatorV2 as Estimator, SamplerV2 as Sampler
 
 import numpy as np
 import pickle
 from random import sample
 import torch
-
-from .utils import roll_numpy, roll_torch
-
+import string
+from utils import roll_numpy, roll_torch
+import torch.nn.functional as F
 
 class QuantumFiltersBase():
     def __init__(
-            self, n_dimensions: int, shape: tuple, stride: float,
+            self, n_dimensions: int, shape: tuple, stride: float, encoding: str,
             shots: int, backend: str):
 
         self.n_dimensions = n_dimensions
 
         # Calculate the number of qubits
-        self.nqbits = int(np.ceil(np.log2(shape[0]**n_dimensions)) + 1)
+        if encoding=='angle':
+            self.nqbits =shape[0]**n_dimensions
+        elif encoding=='frqi':    
+            self.nqbits = int(np.ceil(np.log2(shape[0]**n_dimensions)) + 1)
+        else:
+            raise ValueError('Data encoding method not implemented. The available encoding methods are frqi and angle.')
+        self.encoding = encoding
 
         self.shape = shape
         self.stride = stride
@@ -38,6 +44,10 @@ class QuantumFiltersBase():
                 torch.cuda.set_device(int("cuda:0".split(':')[1]))
             else:
                 self.device = torch.device("cpu")
+        elif backend=='aer_simulator':
+            self.backend = AerSimulator()
+        elif type(backend) == str:
+            raise ValueError('The only valid backend names are "torch" and "aer_simulator". You can also provide a Qiskit Backend directly.')
 
         # Initialise
         self.unitaries_list = []
@@ -154,24 +164,17 @@ class QuantumFiltersBase():
                 name_gate[q1_idx+1:q2_idx] + \
                 'Z' + name_gate[q2_idx+1:]
             coef = np.random.uniform(-Js/2, Js/2)
-            pauli_op += coef*opflow.PauliOp(Pauli(name))
+            pauli_op += coef*SparsePauliOp(name)
 
         for q_idx in qubit_idxs:  # Single qubit operators
             name = name_gate[:q_idx] + 'X' + name_gate[(q_idx+1):]
             coef = h
-            pauli_op += coef*opflow.PauliOp(Pauli(name))
+            pauli_op += coef*SparsePauliOp(name)
 
-        # Time evolution operator exp(iHt)
-        evo_time = Parameter('θ')
-        evolution_op = (evo_time*pauli_op).exp_i()
-
-        # Trotterization
-        trotterized_op = opflow.PauliTrotterEvolution(
-            trotter_mode=opflow.Suzuki(order=2, reps=1)).convert(evolution_op)
-        bound = trotterized_op.bind_parameters({evo_time: t})
-
-        # Convert the trotterized operator to a quantum circuit
-        qc_ham = bound.to_circuit()
+        # Time evolution circuit
+        evolution_gate = PauliEvolutionGate(pauli_op, time=t)
+        qc_ham = QuantumCircuit(self.nqbits)
+        qc_ham.append(evolution_gate, list(range(self.nqbits)))
 
         return qc_ham
 
@@ -201,25 +204,26 @@ class QuantumFiltersBase():
         self.gates_name = gates_name
         for i in range(num_filters):
             U_list = []
-            for j in range(num_features):
+            for _ in range(num_features):
                 # Store circuit parameters
                 self.num_gates = num_gates
-                if gates_name == 'Ising':
-                    # If the quantum reservoir is the Ising model
-                    qc = self._apply_ising_gates()
+                if gates_name == 'random':
+                    U = torch.tensor(random_unitary(2**self.nqbits).data)
+                    U_list.append(U)
                 else:
-                    # Otherwise, if it is one of the G families
-                    gates_set, qubits_set = \
-                        self._select_gates_qubits(gates_name, num_gates)
+                    if gates_name == 'Ising':
+                        # If the quantum reservoir is the Ising model
+                        qc = self._apply_ising_gates()
+                    else:
+                        # Otherwise, if it is one of the G families
+                        gates_set, qubits_set = \
+                            self._select_gates_qubits(gates_name, num_gates)
+                        qc = QuantumCircuit(self.nqbits)
+                        # Random quantum circuit with gates
+                        self._apply_G_gates(qc, gates_set, qubits_set)
                     # Get unitary
-                    qc = QuantumCircuit(self.nqbits)
-                    # Random quantum circuit
-                    self._apply_G_gates(qc, gates_set, qubits_set)
-                # Get unitary
-                backend = BasicAer.get_backend('unitary_simulator')
-                job = backend.run(transpile(qc, backend))
-                U = job.result().get_unitary(qc)
-                U_list.append(U)
+                    U = Operator(qc).data 
+                    U_list.append(U)
             self.unitaries_list.append(U_list)
         # Save unitaries to file
         if save:
@@ -393,6 +397,26 @@ class QuantumFiltersBase():
         qc.initialize(initial_state, list(range(self.nqbits)))
         return qc, initial_state
 
+    def _angle_encoding(self, box):
+        '''
+        Angle encoding for images. Takes an (nxn) or
+        (nxnxn) box and returns the encoded quantum circuit.
+        This function is only used with Qiskit backends.
+            box (np.array): (nxn) or (nxnxn) box to be encoded
+        '''
+        # check if the box has the correct shape
+        assert box.shape == self.shape
+        # Define quantum circuit
+        cr = ClassicalRegister(self.nqbits)
+        qr = QuantumRegister(self.nqbits)
+        qc = QuantumCircuit(qr, cr)
+        flattened_box = box.flatten()
+        for (i,angle) in enumerate(flattened_box):
+            qc.rx(angle,i)
+        
+        return qc
+
+
     def _scale_data(self, data):
         """
         Scale the data to [0, pi/2) (each feature is scaled separately)
@@ -424,9 +448,13 @@ class QuantumFiltersBase():
             gates_set (list): Set of random quantum gates
             qubits_set (list): List of qubits to apply the quantum gates
         '''
-        # FRQI encoding
-        qc, initial_state = self._FRQI_encoding(box)
-
+        if self.encoding=='frqi':
+            # FRQI encoding
+            qc, _ = self._FRQI_encoding(box)
+        elif self.encoding=='angle':
+            # Angle encoding
+            qc = self._angle_encoding(box)
+    
         # Random quantum circuit
         if self.gates_name == 'Ising':
             qc_Ising = self._apply_ising_gates()
@@ -434,26 +462,50 @@ class QuantumFiltersBase():
         else:
             self._apply_G_gates(qc, gates_set, qubits_set, measure=True)
 
+        # Measure
+        qc.measure_all()
         # Get counts
-        if self.backend == 'aer_simulator':
-            aer_sim = Aer.get_backend(self.backend)
-            t_qc = transpile(qc, aer_sim)
-            qobj = assemble(t_qc, shots=self.shots)
-            result = aer_sim.run(qobj).result()
-        else:  # For real hardware/fake simulators
-            optimized_3 = transpile(
-                qc, backend=self.backend, seed_transpiler=11)
-            result = self.backend.run(optimized_3, shots=self.shots).result()
-        counts = result.get_counts(qc)
+        is_simulator = self.backend.configuration().simulator # Check if we're using a simulator or quantum hardware
+        with Session(backend=self.backend) as session: # Create a session with such backend
+            sampler = Sampler(mode=session) if self.encoding =='frqi' else Estimator(mode=session)
+            sampler.options.default_shots = self.shots
 
-        # Calculate binary string of basis qubits
-        new_counts = [
-            counts.get(''.join([str(value) for value in qbits]), 0)
-            for qbits in itertools.product([0, 1], repeat=self.nqbits-1)
-        ]
-        new_counts /= np.sum(new_counts)
+            # If running on real hardware (not a simulator), apply error mitigation
+            if not is_simulator:
+                sampler.options.dynamical_decoupling.enable = True
+                sampler.options.dynamical_decoupling.sequence_type = "XY4"
+                sampler.options.twirling.enable_gates = True
+                sampler.options.twirling.num_randomizations = "auto"
 
-        return new_counts
+            if self.encoding=='frqi':
+                qc = transpile(qc, self.backend)
+                pub = (qc,) # Prepare input
+                job = sampler.run([pub]) 
+                counts = job.result()[0].data.meas.get_counts()
+                # Calculate binary string of basis qubits
+                new_counts = [
+                    counts.get(''.join([str(value) for value in qbits]), 0)
+                    for qbits in itertools.product([0, 1], repeat=qc.num_qubits)#self.nqbits-1)
+                ]
+                #print(counts, new_counts)
+                new_counts /= np.sum(new_counts)
+                return new_counts
+            
+            else:
+                exp_vals = []
+                # Get operators
+                for index in range(self.nqbits):
+                    name = "I"*self.nqbits
+                    name=name[:index] + 'Z' + name[index + 1:]
+                    op = SparsePauliOp(name)
+                    # Run expected value
+                    isa_hamiltonian = op.apply_layout(qc.layout)
+                    pub = (qc, isa_hamiltonian,)
+                    job = sampler.run([pub])
+                    results = job.result()[0]
+                    exp_vals.append(results.data.evs)               
+
+                return np.array(exp_vals)
 
     def _run_filter_qiskit(self, data, gates_set, qubits_set, tol=1e-6):
         '''
@@ -523,9 +575,74 @@ class QuantumFiltersBase():
 
         return results
 
-    def _run_filter_torch(self, data, tol, U):
+    def _run_filter_torch_angle(self, data, tol, U):
+        """ 
+        Runs quantm filter with angle encoding.
+        This function is only used with Pytorch backend.
+            data (tensor): input data (one feature), shape (num_samples, N,N,N)
+            tol (float): tolerance for the masking matrix. All values from the
+            original data which are smaller than the tolerance are set to 0
+            U (tensor): Unitary matrix representing the random quantum circuit
+        returns:
+            (tensor): quantum filter applied to data
         """
-        Runs a quantum filter to a feature from the data samples.
+        size = self.shape[0]
+        data = data.reshape(-1,1,data.shape[-1], data.shape[-1])
+        #print('data', data.shape)
+        # Get measurement operator
+        Zs = []
+        for index in range(self.nqbits):
+            name = "I"*self.nqbits
+            name=name[:index] + 'Z' + name[index + 1:]
+            Zs.append(torch.tensor(Pauli(name).to_matrix()))
+
+        # 1. Get rolling windows
+        reshape_idxs = (-1,) + (size,) * 2
+        #print('reshape_idxs', reshape_idxs)
+        strided_window = torch.nn.functional.unfold(data, (size,size), stride=self.stride)
+        #print('strided_window', strided_window.shape)
+        windows = strided_window.reshape(*reshape_idxs)
+        #print('windows', windows.shape)
+        # 2. Get initial state (rotation for each qubit)
+        v1 = torch.tensor([[1, 0]])
+        v2 = torch.tensor([[0, 1]])
+        flat_block = windows.reshape(-1,size*size)
+
+        cos_block = torch.cos(flat_block)
+        sin_block = torch.sin(flat_block)
+        prod = cos_block[:,:, None] * v1 + sin_block[:,:, None] * v2
+        # 2. Get the tensor product of the [cos(theta),sin(theta)] vectors to create the final state
+        letters = list(string.ascii_lowercase)
+        l1 = letters[0]
+        # Create the formula string
+        formula = f"{','.join([l1 + letters[i] for i in range(1, self.nqbits + 1)])}->{''.join(letters[:self.nqbits+1])}"
+        # Create the list of products using list comprehension
+        prods = [prod[:, i] for i in range(self.nqbits)]
+        all_prod = torch.einsum(formula,*prods).reshape(-1,2**self.nqbits).type(torch.complex128)
+        # 3. Apply unitary matrix
+        apply_U = (U @ all_prod.T).T
+        # 4. Calculate expected values
+        exps = None
+        for Z in Zs:
+            exp = ((apply_U.conj() @ Z) * apply_U).sum(dim=1).real.reshape(-1,1)
+            if exps is None:
+                exps = exp
+            else:
+                exps =torch.concat((exps, exp), axis=1)
+        exps = exps.reshape(1,1,-1,size,size)
+
+        # 5. Reshape to original image
+        output_strided = exps.reshape(strided_window.shape)
+        quantum_filter = torch.nn.functional.fold(output_strided, output_size = (data.shape[-1], data.shape[-1]),
+                                                   kernel_size=(size,size), stride=(self.stride, self.stride))
+        quantum_filter = quantum_filter.reshape(data.shape[0], data.shape[-1],data.shape[-1])
+        #print('quantum_filter', quantum_filter.shape)
+        return quantum_filter
+
+                
+    def _run_filter_torch_frqi(self, data, tol, U):
+        """
+        Runs a quantum filter to a feature from the data samples with Flexible Representation of Quantum Images.
         This function is only used with Pytorch backend.
             data (tensor): input data (one feature), shape (num_samples, N,N,N)
             tol (float): tolerance for the masking matrix. All values from the
@@ -589,7 +706,7 @@ class QuantumFiltersBase():
 
         # 8. Create a mask to map to zero all zero values of the original image
         mask = torch.ones(windows.shape)
-        mask[np.abs(windows) < tol] = 0
+        mask[torch.abs(windows) < tol] = 0
         mask = mask.reshape(self.shape_windows).permute(permutation_idxs) \
             .reshape(new_reshape_idxs).to(self.device)
 
@@ -611,8 +728,13 @@ class QuantumFiltersBase():
         data_scaled = self._scale_data(data)
         self.num_samples = data.shape[0]  # Store number of samples
         fin_shape = int(data.shape[-1]/self.stride)  # Final shape of the data
-
+        
         if self.backend == 'torch':
+            if self.encoding=='frqi':
+                fun_filter = self._run_filter_torch_frqi
+            elif self.encoding=='angle':
+                fun_filter = self._run_filter_torch_angle
+            
             data_out = torch.zeros(
                 (data.shape[0], data.shape[1],) +
                 (fin_shape,) * self.n_dimensions
@@ -624,11 +746,11 @@ class QuantumFiltersBase():
                 ).to(self.device)
 
                 if self.n_dimensions == 2:
-                    data_out[:, i, :, :] = self._run_filter_torch(
+                    data_out[:, i, :, :] = fun_filter(
                         data_scaled[:, i, :, :], tol, unitary_matrix
                     )
                 elif self.n_dimensions == 3:
-                    data_out[:, i, :, :, :] = self._run_filter_torch(
+                    data_out[:, i, :, :, :] = fun_filter(
                         data_scaled[:, i, :, :, :], tol, unitary_matrix
                     )
         else:
@@ -751,11 +873,11 @@ class QuantumFilters2D(QuantumFiltersBase):
 
     def __init__(
             self, shape: tuple = (4, 4), stride: float = 1,
-            shots: int = 4096, backend: str = 'torch'):
+            encoding: str ='frqi',  shots: int = 4096, backend = 'torch'):
 
         super().__init__(
             n_dimensions=2, shape=shape, stride=stride,
-            shots=shots, backend=backend)
+            encoding = encoding, shots=shots, backend=backend)
 
 
 class QuantumFilters3D(QuantumFiltersBase):
@@ -808,8 +930,8 @@ class QuantumFilters3D(QuantumFiltersBase):
 
     def __init__(
             self, shape: tuple = (4, 4, 4), stride: float = 1,
-            shots: int = 4096, backend: str = 'torch'):
+            encoding: str ='frqi', shots: int = 4096, backend = 'torch'):
 
         super().__init__(
             n_dimensions=3, shape=shape, stride=stride,
-            shots=shots, backend=backend)
+            encoding = encoding, shots=shots, backend=backend)

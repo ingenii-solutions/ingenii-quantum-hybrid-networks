@@ -3,12 +3,13 @@ import torch
 
 from itertools import product, permutations
 from math import sqrt
-from qiskit import QuantumCircuit, Aer
-from qiskit import transpile, assemble
+from qiskit import QuantumCircuit
+from qiskit_aer import AerSimulator
+from qiskit_ibm_runtime import Session, SamplerV2 as Sampler
 from tqdm import tqdm
 from time import time
 
-from .utils import roll_numpy, roll_torch
+from utils import roll_numpy, roll_torch
 
 
 class EdgeDetectorBase:
@@ -53,11 +54,14 @@ class EdgeDetectorBase:
             ).to(self.device)
 
         # Running in a Qiskit environment
-        else:
-            self.shots = shots
-            # 2. Quantum operations: rolling Identity
-            self.D2n = np.roll(np.identity(2**self.total_qb), 1, axis=1)
-
+        elif backend=='aer_simulator':
+            self.backend = AerSimulator()
+        elif type(backend) == str:
+            raise ValueError('The only valid backend names are "torch" and "aer_simulator". You can also provide a Qiskit Backend directly.')
+        self.shots = shots
+        # Quantum operations: rolling Identity
+        self.D2n = np.roll(np.identity(2**self.total_qb), 1, axis=1)
+            
     def run_box(self, box, tol=1e-3):
         '''
         Run the edge detection algorithm for every box of the image
@@ -84,17 +88,21 @@ class EdgeDetectorBase:
         qc.measure_all()
 
         # Run quantum circuit
-        if self.backend == 'aer_simulator':
-            aer_sim = Aer.get_backend(self.backend)
-            t_qc = transpile(qc, aer_sim)
-            qobj = assemble(t_qc, shots=self.shots)
-            result = aer_sim.run(qobj).result()
-        else:  # For real hardware/fake simulators
-            # coupling_map = self.backend.configuration().coupling_map
-            optimized_3 = transpile(
-                qc, backend=self.backend, seed_transpiler=11)
-            result = self.backend.run(optimized_3, shots=self.shots).result()
-        counts = result.get_counts(qc)
+        is_simulator = self.backend.configuration().simulator # Check if we're using a simulator or quantum hardware
+        with Session(backend=self.backend) as session: # Create a session with such backend
+            sampler = Sampler(mode=session)
+            sampler.options.default_shots = self.shots
+
+            # If running on real hardware (not a simulator), apply error mitigation
+            if not is_simulator:
+                sampler.options.dynamical_decoupling.enable = True
+                sampler.options.dynamical_decoupling.sequence_type = "XY4"
+                sampler.options.twirling.enable_gates = True
+                sampler.options.twirling.num_randomizations = "auto"
+
+            pub = (qc,) # Prepare input
+            job = sampler.run([pub]) 
+            counts = job.result()[0].data.meas.get_counts()
 
         # Get statevector from counts
         # Calculate binary string of basis qubits
@@ -235,7 +243,7 @@ class EdgeDetectorBase:
             torch.tensor(normalized_flatten, dtype=torch.float32),
             torch.tensor([1, 0]).to(self.device)
         )
-
+        self.D2n = torch.tensor(self.D2n, dtype = torch.float32).to(self.device)
         # 5. Apply quantum operations
         final_state_h = (
             normalized_larger @ self.hadamard_large @ self.D2n

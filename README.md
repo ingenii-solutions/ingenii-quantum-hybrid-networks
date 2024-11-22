@@ -1,6 +1,6 @@
 # Ingenii Quantum Hybrid Networks
 
-Version: 0.2.0
+Version: 0.3.1
 
 Package of tools to integrate hybrid quantum-classical neural networks to your machine learning algorithms.
 The algorithms provided in this package are implemented both in Qiskit (meant to run on real hardware and fake providers) and in Pytorch or Tensorflow (meant to run in quantum simulation with CPUs or GPUs). This package contains the following quantum algorithms:
@@ -17,3 +17,6 @@ The simulation results presented here will demonstrate the superior performance 
 
 ## Quantum Hadamard Edge Detection (2D and 3D):
 Performs edge detection for 2D data (images) and 3D data (volumes), using quantum operations. 
+
+## Quantum-inspired image filter
+This quantum-inspired filter is especially useful to highlight regions with varying contrast and identify regions of interest. This transformation essentially adjusts the pixel intensity of the image based on its local contrast and overall neighborhood contribution, which enhances segmentation by emphasizing the boundaries and transitions in the image.
